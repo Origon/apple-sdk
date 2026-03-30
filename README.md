@@ -39,7 +39,7 @@ import OrigonSDK
 let config = ClientConfig(
     endpoint: "https://api.origon.ai",
     token: "your-api-token",
-    externalId: "user-123"
+    userId: "user-123"
 )
 let client = try OrigonClient(config: config)
 

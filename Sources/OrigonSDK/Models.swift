@@ -164,12 +164,12 @@ public struct UploadProgress: Sendable {
 public struct ClientConfig: Sendable {
     public let endpoint: String
     public let token: String
-    public let externalId: String
+    public let userId: String
 
-    public init(endpoint: String, token: String, externalId: String) {
+    public init(endpoint: String, token: String, userId: String) {
         self.endpoint = endpoint
         self.token = token
-        self.externalId = externalId
+        self.userId = userId
     }
 }
 

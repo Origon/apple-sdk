@@ -13,11 +13,11 @@ public final class OrigonClient: @unchecked Sendable {
     public init(config: ClientConfig) throws {
         var cConfig = config.endpoint.withCString { endpoint in
             config.token.withCString { token in
-                config.externalId.withCString { externalId in
+                config.userId.withCString { userId in
                     OrigonConfig(
                         endpoint: endpoint,
                         token: token,
-                        external_id: externalId
+                        user_id: userId
                     )
                 }
             }

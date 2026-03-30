@@ -64,7 +64,7 @@ typedef enum {
 typedef struct {
     const char *endpoint;
     const char *token;
-    const char *external_id;
+    const char *user_id;
 } OrigonConfig;
 
 typedef struct {
