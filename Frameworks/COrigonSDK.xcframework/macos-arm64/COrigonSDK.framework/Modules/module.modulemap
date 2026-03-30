@@ -1,0 +1,4 @@
+framework module COrigonSDK {
+    header "native_client.h"
+    export *
+}

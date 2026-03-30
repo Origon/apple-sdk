@@ -81,6 +81,7 @@ public struct SessionInfo: Sendable {
 /// Summary of a session for listing purposes.
 public struct SessionSummary: Sendable {
     public let sessionId: String
+    public let title: String?
     public let channel: Channel
     public let createdAt: String
     public let updatedAt: String
@@ -163,10 +164,10 @@ public struct UploadProgress: Sendable {
 /// Configuration for creating an OrigonClient.
 public struct ClientConfig: Sendable {
     public let endpoint: String
-    public let token: String
+    public let token: String?
     public let userId: String
 
-    public init(endpoint: String, token: String, userId: String) {
+    public init(endpoint: String, token: String? = nil, userId: String) {
         self.endpoint = endpoint
         self.token = token
         self.userId = userId

@@ -11,18 +11,20 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Creates a new client connected to the Origon platform.
     public init(config: ClientConfig) throws {
-        var cConfig = config.endpoint.withCString { endpoint in
-            config.token.withCString { token in
-                config.userId.withCString { userId in
-                    OrigonConfig(
-                        endpoint: endpoint,
-                        token: token,
-                        user_id: userId
-                    )
+        // Call origon_client_create inside withCString closures so pointers remain valid.
+        let ptr: OpaquePointer? = config.endpoint.withCString { endpoint in
+            config.userId.withCString { userId in
+                if let token = config.token {
+                    return token.withCString { tokenPtr in
+                        var cConfig = OrigonConfig(endpoint: endpoint, token: tokenPtr, user_id: userId)
+                        return origon_client_create(&cConfig)
+                    }
+                } else {
+                    var cConfig = OrigonConfig(endpoint: endpoint, token: nil, user_id: userId)
+                    return origon_client_create(&cConfig)
                 }
             }
         }
-        let ptr = origon_client_create(&cConfig)
         guard let ptr else {
             throw OrigonError.clientCreationFailed
         }
@@ -340,6 +342,7 @@ private extension OrigonClient {
             let s = items[i]
             return SessionSummary(
                 sessionId: String(cString: s.session_id),
+                title: s.title.map { String(cString: $0) },
                 channel: Channel.fromC(s.channel),
                 createdAt: String(cString: s.created_at),
                 updatedAt: String(cString: s.updated_at),
@@ -352,9 +355,9 @@ private extension OrigonClient {
         _ payload: SendMessagePayload,
         body: (OrigonSendMessagePayload) -> R
     ) -> R {
-        let textCStr = payload.text.map { strdup($0) }
-        let htmlCStr = payload.html.map { strdup($0) }
-        let typeCStr = payload.type.map { strdup($0) }
+        let textCStr: UnsafeMutablePointer<CChar>? = payload.text.flatMap { strdup($0) }
+        let htmlCStr: UnsafeMutablePointer<CChar>? = payload.html.flatMap { strdup($0) }
+        let typeCStr: UnsafeMutablePointer<CChar>? = payload.type.flatMap { strdup($0) }
 
         defer {
             textCStr.map { free($0) }

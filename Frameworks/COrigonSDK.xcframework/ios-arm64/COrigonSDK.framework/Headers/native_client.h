@@ -120,6 +120,7 @@ typedef struct {
 
 typedef struct {
     char *session_id;
+    char *title;
     OrigonChannel channel;
     char *created_at;
     char *updated_at;
