@@ -30,6 +30,9 @@ Then add `OrigonSDK` to your target's dependencies:
 ),
 ```
 
+The pre-built `COrigonSDK` XCFramework is downloaded automatically by SPM
+from [GitHub Releases](https://github.com/Origon/apple-sdk/releases).
+
 ## Quick Start
 
 ```swift
