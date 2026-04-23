@@ -9,25 +9,60 @@ import COrigonSDK
 public final class OrigonClient: @unchecked Sendable {
     private var handle: OpaquePointer?
 
+    /// Enable Rust-side tracing output. Idempotent — only the first call
+    /// installs the subscriber.
+    ///
+    /// Call once at app launch to see HTTP/TLS/SDK logs in the Xcode
+    /// console. `filter` accepts `RUST_LOG`-style directives
+    /// (e.g. `"info,lumen=debug"`); pass `nil` for a debug-level default
+    /// scoped to the SDK layers.
+    public static func initLogging(filter: String? = nil) {
+        if let filter {
+            filter.withCString { cstr in origon_init_logging(cstr) }
+        } else {
+            origon_init_logging(nil)
+        }
+    }
+
     /// Creates a new client connected to the Origon platform.
+    ///
+    /// Throws `OrigonError.clientCreationFailed` wrapping a
+    /// `ConnectError` with the structured failure reason.
     public init(config: ClientConfig) throws {
-        // Call origon_client_create inside withCString closures so pointers remain valid.
+        var connectError = OrigonConnectError()
+        // Nested `withCString` closures keep every string pointer alive for
+        // the duration of the `origon_client_create` call.
         let ptr: OpaquePointer? = config.endpoint.withCString { endpoint in
-            config.userId.withCString { userId in
-                if let token = config.token {
-                    return token.withCString { tokenPtr in
-                        var cConfig = OrigonConfig(endpoint: endpoint, token: tokenPtr, user_id: userId)
-                        return origon_client_create(&cConfig)
+            config.bundleId.withCString { bundleId in
+                config.userId.withCString { userId in
+                    if let token = config.token {
+                        return token.withCString { tokenPtr in
+                            var cConfig = OrigonConfig(
+                                endpoint: endpoint,
+                                bundle_id: bundleId,
+                                token: tokenPtr,
+                                user_id: userId
+                            )
+                            return origon_client_create(&cConfig, &connectError)
+                        }
+                    } else {
+                        var cConfig = OrigonConfig(
+                            endpoint: endpoint,
+                            bundle_id: bundleId,
+                            token: nil,
+                            user_id: userId
+                        )
+                        return origon_client_create(&cConfig, &connectError)
                     }
-                } else {
-                    var cConfig = OrigonConfig(endpoint: endpoint, token: nil, user_id: userId)
-                    return origon_client_create(&cConfig)
                 }
             }
         }
         guard let ptr else {
-            throw OrigonError.clientCreationFailed
+            let swiftError = ConnectError.fromC(connectError)
+            origon_connect_error_free(&connectError)
+            throw OrigonError.clientCreationFailed(swiftError)
         }
+        // Happy path leaves the out-error zero-initialized; no free needed.
         self.handle = ptr
     }
 
@@ -186,6 +221,66 @@ public final class OrigonClient: @unchecked Sendable {
             origon_client_delete_attachment(handle, mid)
         }
         guard result == 0 else { throw OrigonError.deleteFailed }
+    }
+
+    /// Whether the server allows file attachments in this session.
+    public func attachmentsAllowed() -> Bool {
+        guard let handle else { return false }
+        return origon_client_attachments_allowed(handle) == 1
+    }
+
+    // MARK: - Server config
+
+    /// Pre-populated first assistant message configured for the tenant.
+    public var startMessage: String {
+        guard let handle else { return "" }
+        guard let cStr = origon_client_get_start_message(handle) else { return "" }
+        defer { origon_string_free(cStr) }
+        return String(cString: cStr)
+    }
+
+    /// True when the tenant has chat enabled.
+    public var isChatEnabled: Bool {
+        guard let handle else { return false }
+        return origon_client_is_chat_enabled(handle) == 1
+    }
+
+    /// True when the tenant has voice calling enabled.
+    public var isCallEnabled: Bool {
+        guard let handle else { return false }
+        return origon_client_is_call_enabled(handle) == 1
+    }
+
+    /// True when chat and call may share one session (Origon OS).
+    public var concurrentChannels: Bool {
+        guard let handle else { return false }
+        return origon_client_concurrent_channels(handle) == 1
+    }
+
+    /// Per-attachment-type policy configured for the tenant.
+    /// Returns an all-disabled policy if the native layer refuses.
+    public var attachmentPolicy: AttachmentPolicy {
+        guard let handle else { return AttachmentPolicy.disabled }
+        var raw = OrigonAttachmentPolicy()
+        let rc = origon_client_get_attachment_policy(handle, &raw)
+        guard rc == 0 else { return AttachmentPolicy.disabled }
+        return AttachmentPolicy(
+            images: AttachmentRule(enabled: raw.images.enabled == 1, maxSize: raw.images.max_size),
+            documents: AttachmentRule(enabled: raw.documents.enabled == 1, maxSize: raw.documents.max_size),
+            videos: AttachmentRule(enabled: raw.videos.enabled == 1, maxSize: raw.videos.max_size),
+            audio: AttachmentRule(enabled: raw.audio.enabled == 1, maxSize: raw.audio.max_size)
+        )
+    }
+
+    /// Full server config snapshot fetched at connect.
+    public var serverConfig: ServerConfig {
+        ServerConfig(
+            startMessage: startMessage,
+            concurrentChannels: concurrentChannels,
+            isChatEnabled: isChatEnabled,
+            isCallEnabled: isCallEnabled,
+            attachmentPolicy: attachmentPolicy
+        )
     }
 
     /// Returns the download URL for an attachment.
@@ -414,6 +509,44 @@ private extension OrigonClient {
             }
         }
     }
+}
+
+// MARK: - ConnectError mapping
+
+extension ConnectError {
+    /// Translate a populated `OrigonConnectError` into the Swift enum.
+    /// Safe on a zero-initialized struct (returns `.unknown`).
+    static func fromC(_ raw: OrigonConnectError) -> ConnectError {
+        let code = raw.code.map { String(cString: $0) } ?? ""
+        let message = raw.message.map { String(cString: $0) } ?? ""
+        switch raw.kind {
+        case ORIGON_CONNECT_ERROR_MISSING_FIELD:
+            return .missingField(field: code.isEmpty ? "unknown" : code)
+        case ORIGON_CONNECT_ERROR_TRANSPORT:
+            return .transport(message: message)
+        case ORIGON_CONNECT_ERROR_FORBIDDEN:
+            return .forbidden(code: code, message: message)
+        case ORIGON_CONNECT_ERROR_HTTP:
+            return .http(status: Int(raw.status), code: code, message: message)
+        case ORIGON_CONNECT_ERROR_SERVER_UNAVAILABLE:
+            return .serverUnavailable(status: Int(raw.status))
+        default:
+            return .unknown(message: message.isEmpty ? "client create failed" : message)
+        }
+    }
+}
+
+// MARK: - AttachmentPolicy helpers
+
+extension AttachmentPolicy {
+    /// Fallback returned when the native layer refuses to hand back the
+    /// policy (e.g. null handle). All categories disabled, zero size.
+    static let disabled = AttachmentPolicy(
+        images: AttachmentRule(enabled: false, maxSize: 0),
+        documents: AttachmentRule(enabled: false, maxSize: 0),
+        videos: AttachmentRule(enabled: false, maxSize: 0),
+        audio: AttachmentRule(enabled: false, maxSize: 0)
+    )
 }
 
 // MARK: - Private Helpers
