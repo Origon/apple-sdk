@@ -1,269 +1,118 @@
 import Foundation
 import COrigonSDK
 
-/// The primary interface to the Origon platform.
+/// The primary interface to the Origon platform on Apple platforms.
 ///
-/// Create an instance with a ``ClientConfig``, then call methods to manage
-/// sessions, send messages, and handle attachments. Poll for server-pushed
-/// events with ``pollEvent()``.
+/// Backed by the `COrigonSDK` XCFramework (statically linked
+/// `libsession.a`). One instance owns one native handle and one tokio
+/// runtime; create at app start, deinit when shutting down.
+///
+/// All fallible methods throw ``OrigonError`` with a structured
+/// `kind` / `statusCode` / `code` / `message`.
 public final class OrigonClient: @unchecked Sendable {
     private var handle: OpaquePointer?
 
-    /// Enable Rust-side tracing output. Idempotent — only the first call
-    /// installs the subscriber.
+    /// Install the global tracing subscriber. Idempotent — only the
+    /// first call installs; subsequent calls are no-ops.
     ///
-    /// Call once at app launch to see HTTP/TLS/SDK logs in the Xcode
-    /// console. `filter` accepts `RUST_LOG`-style directives
-    /// (e.g. `"info,lumen=debug"`); pass `nil` for a debug-level default
-    /// scoped to the SDK layers.
+    /// `filter` accepts `RUST_LOG`-style directives. Pass `nil` for the
+    /// SDK default.
     public static func initLogging(filter: String? = nil) {
         if let filter {
-            filter.withCString { cstr in origon_init_logging(cstr) }
+            filter.withCString { cstr in _ = session_init_logging(cstr) }
         } else {
-            origon_init_logging(nil)
+            _ = session_init_logging(nil)
         }
     }
 
-    /// Creates a new client connected to the Origon platform.
-    ///
-    /// Throws `OrigonError.clientCreationFailed` wrapping a
-    /// `ConnectError` with the structured failure reason.
     public init(config: ClientConfig) throws {
-        var connectError = OrigonConnectError()
-        // Nested `withCString` closures keep every string pointer alive for
-        // the duration of the `origon_client_create` call.
-        let ptr: OpaquePointer? = config.endpoint.withCString { endpoint in
-            config.bundleId.withCString { bundleId in
-                config.userId.withCString { userId in
-                    if let token = config.token {
-                        return token.withCString { tokenPtr in
-                            var cConfig = OrigonConfig(
-                                endpoint: endpoint,
-                                bundle_id: bundleId,
+        var err = SessionError()
+        var newHandle: OpaquePointer?
+        let attributesJson = try Self.encodeAttributes(config.attributes)
+        let rc: Int32 = config.endpoint.withCString { endpointPtr in
+            withOptionalCString(config.bundleId) { bundlePtr in
+                withOptionalCString(config.token) { tokenPtr in
+                    withOptionalCString(config.userId) { userIdPtr in
+                        withOptionalCString(attributesJson) { attrsPtr in
+                            var cfg = SessionClientConfig(
+                                endpoint: endpointPtr,
+                                bundle_id: bundlePtr,
                                 token: tokenPtr,
-                                user_id: userId
+                                user_id: userIdPtr,
+                                platform: config.platform.toC(),
+                                attributes_json: attrsPtr
                             )
-                            return origon_client_create(&cConfig, &connectError)
+                            return session_client_create(&cfg, &newHandle, &err)
                         }
-                    } else {
-                        var cConfig = OrigonConfig(
-                            endpoint: endpoint,
-                            bundle_id: bundleId,
-                            token: nil,
-                            user_id: userId
-                        )
-                        return origon_client_create(&cConfig, &connectError)
                     }
                 }
             }
         }
-        guard let ptr else {
-            let swiftError = ConnectError.fromC(connectError)
-            origon_connect_error_free(&connectError)
-            throw OrigonError.clientCreationFailed(swiftError)
+        guard rc == 0, let newHandle else {
+            throw OrigonError.consume(&err)
         }
-        // Happy path leaves the out-error zero-initialized; no free needed.
-        self.handle = ptr
+        self.handle = newHandle
+    }
+
+    /// Serialize a `[String: Any]?` to a JSON string. Returns `nil` when
+    /// the input is `nil`. Throws `OrigonError(.other, ...)` if the
+    /// dictionary contains a value `JSONSerialization` can't handle.
+    private static func encodeAttributes(_ attrs: [String: Any]?) throws -> String? {
+        guard let attrs else { return nil }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: attrs, options: [])
+            guard let s = String(data: data, encoding: .utf8) else {
+                throw OrigonError(kind: .other, message: "attributes encode: utf8")
+            }
+            return s
+        } catch let e as OrigonError {
+            throw e
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "attributes encode: \(error.localizedDescription)"
+            )
+        }
     }
 
     deinit {
         if let handle {
-            origon_client_destroy(handle)
+            session_client_destroy(handle)
         }
     }
 
-    /// Polls for the next event from the server. Returns `nil` when no event is available.
-    public func pollEvent() -> ClientEvent? {
-        guard let handle else { return nil }
-        var event = origon_client_poll_event(handle)
-        defer { origon_event_free(&event) }
-        return convertEvent(event)
-    }
-
-    /// Starts a new session or resumes an existing one.
-    public func startSession(_ options: StartSessionOptions) throws -> SessionInfo {
-        guard let handle else { throw OrigonError.sessionStartFailed }
-
-        let result: Int32
-        var out = OrigonSessionInfo()
-
-        if let sessionId = options.sessionId {
-            result = sessionId.withCString { sid in
-                var opts = OrigonStartSessionOptions(
-                    channel: options.channel.toCChannel(),
-                    session_id: sid,
-                    fetch_session: options.fetchSession ? 1 : 0
-                )
-                return origon_client_start_session(handle, &opts, &out)
-            }
-        } else {
-            var opts = OrigonStartSessionOptions(
-                channel: options.channel.toCChannel(),
-                session_id: nil,
-                fetch_session: options.fetchSession ? 1 : 0
-            )
-            result = origon_client_start_session(handle, &opts, &out)
-        }
-
-        guard result == 0 else { throw OrigonError.sessionStartFailed }
-        defer { origon_session_info_free(&out) }
-        return convertSessionInfo(out)
-    }
-
-    /// Fetches all session summaries.
-    public func getSessions() throws -> [SessionSummary] {
-        guard let handle else { throw OrigonError.sessionsFetchFailed }
-        var out = OrigonSessionList()
-        let result = origon_client_get_sessions(handle, &out)
-        guard result == 0 else { throw OrigonError.sessionsFetchFailed }
-        defer { origon_session_list_free(&out) }
-        return convertSessionList(out)
-    }
-
-    /// Fetches the control state and messages of a specific session.
-    public func getSession(sessionId: String) throws -> (Control, [Message]) {
-        guard let handle else { throw OrigonError.sessionFetchFailed }
-        var out = OrigonGetSessionResult()
-        let result = sessionId.withCString { sid in
-            origon_client_get_session(handle, sid, &out)
-        }
-        guard result == 0 else { throw OrigonError.sessionFetchFailed }
-        defer { origon_get_session_result_free(&out) }
-        let control = Control.fromC(out.control)
-        let messages = convertMessages(out.messages, count: out.messages_len)
-        return (control, messages)
-    }
-
-    /// Ends the current active session.
-    public func endSession() throws {
-        guard let handle else { throw OrigonError.sessionEndFailed }
-        let result = origon_client_end_session(handle)
-        guard result == 0 else { throw OrigonError.sessionEndFailed }
-    }
-
-    /// Sends a message in the current session. Returns the session ID.
-    public func sendMessage(_ payload: SendMessagePayload) throws -> String {
-        guard let handle else { throw OrigonError.sendMessageFailed }
-
-        var outSessionId: UnsafeMutablePointer<CChar>?
-        let result = withSendMessagePayload(payload) { cPayload in
-            var p = cPayload
-            return origon_client_send_message(handle, &p, &outSessionId)
-        }
-
-        guard result == 0, let outSessionId else {
-            throw OrigonError.sendMessageFailed
-        }
-        defer { origon_string_free(outSessionId) }
-        return String(cString: outSessionId)
-    }
-
-    /// Uploads an attachment. Returns the attachment info and an async stream of upload progress.
-    public func uploadAttachment(data: Data, filename: String) throws -> (AttachmentInfo, AsyncStream<UploadProgress>) {
-        guard let handle else { throw OrigonError.uploadFailed }
-
-        var out = OrigonUploadResult()
-        let result = data.withUnsafeBytes { rawBuf in
-            guard let baseAddr = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return Int32(-1)
-            }
-            return filename.withCString { fname in
-                origon_client_upload_attachment(handle, baseAddr, UInt32(data.count), fname, &out)
-            }
-        }
-
-        guard result == 0 else { throw OrigonError.uploadFailed }
-
-        let attachment = AttachmentInfo(
-            mediaId: String(cString: out.attachment.media_id),
-            url: String(cString: out.attachment.url)
-        )
-
-        let progressHandle = out.progress_handle
-        let stream = AsyncStream<UploadProgress> { continuation in
-            guard let progressHandle else {
-                continuation.finish()
-                return
-            }
-            Task.detached {
-                while true {
-                    var progress = OrigonUploadProgress()
-                    let pollResult = origon_progress_poll(progressHandle, &progress)
-                    if pollResult == 0 {
-                        continuation.yield(UploadProgress(
-                            percent: progress.percent,
-                            loaded: progress.loaded,
-                            total: progress.total
-                        ))
-                        if progress.percent >= 100.0 {
-                            break
-                        }
-                    } else {
-                        break
-                    }
-                    try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
-                }
-                origon_progress_free(progressHandle)
-                continuation.finish()
-            }
-        }
-
-        // Free the upload result (but not the progress handle, which is consumed by the stream).
-        origon_attachment_info_free(&out.attachment)
-
-        return (attachment, stream)
-    }
-
-    /// Deletes a previously uploaded attachment.
-    public func deleteAttachment(mediaId: String) throws {
-        guard let handle else { throw OrigonError.deleteFailed }
-        let result = mediaId.withCString { mid in
-            origon_client_delete_attachment(handle, mid)
-        }
-        guard result == 0 else { throw OrigonError.deleteFailed }
-    }
-
-    /// Whether the server allows file attachments in this session.
-    public func attachmentsAllowed() -> Bool {
-        guard let handle else { return false }
-        return origon_client_attachments_allowed(handle) == 1
-    }
-
-    // MARK: - Server config
+    // MARK: - Cached /config getters
 
     /// Pre-populated first assistant message configured for the tenant.
     public var startMessage: String {
         guard let handle else { return "" }
-        guard let cStr = origon_client_get_start_message(handle) else { return "" }
-        defer { origon_string_free(cStr) }
-        return String(cString: cStr)
+        guard let cstr = session_client_get_start_message(handle) else { return "" }
+        defer { session_string_free(cstr) }
+        return String(cString: cstr)
     }
 
-    /// True when the tenant has chat enabled.
     public var isChatEnabled: Bool {
         guard let handle else { return false }
-        return origon_client_is_chat_enabled(handle) == 1
+        return session_client_is_chat_enabled(handle) == 1
     }
 
-    /// True when the tenant has voice calling enabled.
     public var isCallEnabled: Bool {
         guard let handle else { return false }
-        return origon_client_is_call_enabled(handle) == 1
+        return session_client_is_call_enabled(handle) == 1
     }
 
-    /// True when chat and call may share one session (Origon OS).
-    public var concurrentChannels: Bool {
+    /// True when chat and voice may share one session.
+    public var multipleChannels: Bool {
         guard let handle else { return false }
-        return origon_client_concurrent_channels(handle) == 1
+        return session_client_is_multiple_channels_allowed(handle) == 1
     }
 
-    /// Per-attachment-type policy configured for the tenant.
-    /// Returns an all-disabled policy if the native layer refuses.
     public var attachmentPolicy: AttachmentPolicy {
-        guard let handle else { return AttachmentPolicy.disabled }
-        var raw = OrigonAttachmentPolicy()
-        let rc = origon_client_get_attachment_policy(handle, &raw)
-        guard rc == 0 else { return AttachmentPolicy.disabled }
+        guard let handle else { return .disabled }
+        var raw = SessionAttachmentPolicy()
+        guard session_client_get_attachment_policy(handle, &raw) == 0 else {
+            return .disabled
+        }
         return AttachmentPolicy(
             images: AttachmentRule(enabled: raw.images.enabled == 1, maxSize: raw.images.max_size),
             documents: AttachmentRule(enabled: raw.documents.enabled == 1, maxSize: raw.documents.max_size),
@@ -272,350 +121,380 @@ public final class OrigonClient: @unchecked Sendable {
         )
     }
 
-    /// Full server config snapshot fetched at connect.
     public var serverConfig: ServerConfig {
         ServerConfig(
             startMessage: startMessage,
-            concurrentChannels: concurrentChannels,
+            multipleChannels: multipleChannels,
             isChatEnabled: isChatEnabled,
             isCallEnabled: isCallEnabled,
             attachmentPolicy: attachmentPolicy
         )
     }
 
-    /// Returns the download URL for an attachment.
-    public func getAttachmentUrl(mediaId: String) -> String? {
-        guard let handle else { return nil }
-        let cStr = mediaId.withCString { mid in
-            origon_client_get_attachment_url(handle, mid)
+    /// Replace session-level attributes injected as `data.attributes`
+    /// on subsequent `startSession` calls. Pass `nil` to clear.
+    public func setAttributes(_ attrs: [String: Any]?) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        let json = try Self.encodeAttributes(attrs)
+        var err = SessionError()
+        let rc: Int32 = withOptionalCString(json) { ptr in
+            session_client_set_attributes(handle, ptr, &err)
         }
-        guard let cStr else { return nil }
-        defer { origon_string_free(cStr) }
-        return String(cString: cStr)
+        if rc != 0 { throw OrigonError.consume(&err) }
     }
 
-    /// Toggles the mute state for voice sessions. Returns the new mute state.
-    public func toggleMute() throws -> Bool {
-        guard let handle else { throw OrigonError.muteFailed }
-        var muted: Int32 = 0
-        let result = origon_client_toggle_mute(handle, &muted)
-        guard result == 0 else { throw OrigonError.muteFailed }
-        return muted != 0
-    }
-}
+    // MARK: - Session lifecycle
 
-// MARK: - Private C-to-Swift Conversions
+    public func startSession(_ options: StartSessionOptions) throws -> StartSessionResponse {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var resp = SessionStartResponse()
 
-private extension OrigonClient {
-
-    func convertEvent(_ event: OrigonEvent) -> ClientEvent? {
-        switch event.event_type {
-        case ORIGON_EVENT_MESSAGE_ADDED:
-            return .messageAdded(message: convertMessage(event.message), index: event.index)
-        case ORIGON_EVENT_MESSAGE_UPDATED:
-            return .messageUpdated(message: convertMessage(event.message), index: event.index)
-        case ORIGON_EVENT_SESSION_UPDATED:
-            let sid = event.session_id.map { String(cString: $0) } ?? ""
-            return .sessionUpdated(sessionId: sid)
-        case ORIGON_EVENT_CONTROL_UPDATED:
-            return .controlUpdated(control: Control.fromC(event.control))
-        case ORIGON_EVENT_TOOL_CALLS:
-            let calls = convertToolCalls(event.tool_calls, count: event.tool_calls_len)
-            return .toolCalls(calls: calls)
-        case ORIGON_EVENT_TYPING:
-            return .typing(isTyping: event.typing != 0)
-        case ORIGON_EVENT_CALL_STATUS:
-            let status = event.call_status.map { String(cString: $0) } ?? ""
-            return .callStatus(status: status)
-        case ORIGON_EVENT_CALL_ERROR:
-            let error: String? = event.call_error_present != 0
-                ? event.call_error.map { String(cString: $0) }
-                : nil
-            return .callError(error: error)
-        case ORIGON_EVENT_NONE:
-            return nil
-        default:
-            return nil
+        let rc: Int32 = withOptionalCString(options.sessionId) { sidPtr in
+            withOptionalCString(options.data) { dataPtr in
+                var opts = SessionStartOptions(
+                    channel: options.channel.toC(),
+                    session_id: sidPtr,
+                    data_json: dataPtr
+                )
+                return session_client_start_session(handle, &opts, &resp, &err)
+            }
         }
-    }
 
-    func convertMessage(_ msg: OrigonMessage) -> Message {
-        Message(
-            role: MessageRole.fromC(msg.role),
-            text: msg.text.map { String(cString: $0) },
-            html: msg.html.map { String(cString: $0) },
-            timestamp: msg.timestamp.map { String(cString: $0) },
-            loading: msg.loading != 0,
-            done: msg.done != 0,
-            errorText: msg.error_text.map { String(cString: $0) },
-            attachments: convertAttachments(msg.attachments, count: msg.attachments_len),
-            toolCalls: convertToolCalls(msg.tool_calls, count: msg.tool_calls_len),
-            toolCallId: msg.tool_call_id.map { String(cString: $0) },
-            toolName: msg.tool_name.map { String(cString: $0) },
-            meta: convertKeyValues(msg.meta, count: msg.meta_len)
+        guard rc == 0 else { throw OrigonError.consume(&err) }
+        defer { session_start_response_free(&resp) }
+
+        guard let sid = resp.session_id, let url = resp.url, let token = resp.token else {
+            throw OrigonError(
+                kind: .other,
+                message: "incomplete StartSessionResponse"
+            )
+        }
+        return StartSessionResponse(
+            sessionId: String(cString: sid),
+            url: String(cString: url),
+            token: String(cString: token)
         )
     }
 
-    func convertMessages(_ ptr: UnsafeMutablePointer<OrigonMessage>?, count: UInt32) -> [Message] {
-        guard let ptr, count > 0 else { return [] }
-        return (0..<Int(count)).map { convertMessage(ptr[$0]) }
-    }
-
-    func convertAttachments(_ ptr: UnsafeMutablePointer<OrigonAttachmentInfo>?, count: UInt32) -> [AttachmentInfo] {
-        guard let ptr, count > 0 else { return [] }
-        return (0..<Int(count)).map {
-            AttachmentInfo(
-                mediaId: String(cString: ptr[$0].media_id),
-                url: String(cString: ptr[$0].url)
-            )
-        }
-    }
-
-    func convertAttachmentsConst(_ ptr: UnsafePointer<OrigonAttachmentInfo>?, count: UInt32) -> [AttachmentInfo] {
-        guard let ptr, count > 0 else { return [] }
-        return (0..<Int(count)).map {
-            AttachmentInfo(
-                mediaId: String(cString: ptr[$0].media_id),
-                url: String(cString: ptr[$0].url)
-            )
-        }
-    }
-
-    func convertToolCalls(_ ptr: UnsafeMutablePointer<OrigonToolCall>?, count: UInt32) -> [ToolCall] {
-        guard let ptr, count > 0 else { return [] }
-        return (0..<Int(count)).map {
-            let tc = ptr[$0]
-            let args: Data
-            if let argPtr = tc.arguments, tc.arguments_len > 0 {
-                args = Data(bytes: argPtr, count: Int(tc.arguments_len))
-            } else {
-                args = Data()
-            }
-            return ToolCall(
-                toolCallId: String(cString: tc.tool_call_id),
-                toolName: String(cString: tc.tool_name),
-                arguments: args
-            )
-        }
-    }
-
-    func convertKeyValues(_ ptr: UnsafeMutablePointer<OrigonKeyValue>?, count: UInt32) -> [String: String]? {
-        guard let ptr, count > 0 else { return nil }
-        var dict = [String: String]()
-        for i in 0..<Int(count) {
-            let key = String(cString: ptr[i].key)
-            let value = String(cString: ptr[i].value)
-            dict[key] = value
-        }
-        return dict
-    }
-
-    func convertKeyValuesConst(_ ptr: UnsafePointer<OrigonKeyValue>?, count: UInt32) -> [String: String] {
-        guard let ptr, count > 0 else { return [:] }
-        var dict = [String: String]()
-        for i in 0..<Int(count) {
-            let key = String(cString: ptr[i].key)
-            let value = String(cString: ptr[i].value)
-            dict[key] = value
-        }
-        return dict
-    }
-
-    func convertSessionInfo(_ info: OrigonSessionInfo) -> SessionInfo {
-        SessionInfo(
-            sessionId: String(cString: info.session_id),
-            messages: convertMessages(info.messages, count: info.messages_len),
-            control: Control.fromC(info.control),
-            configData: convertKeyValuesConst(info.config_data, count: info.config_data_len),
-            active: info.active != 0
-        )
-    }
-
-    func convertSessionList(_ list: OrigonSessionList) -> [SessionSummary] {
-        guard let items = list.items, list.len > 0 else { return [] }
-        return (0..<Int(list.len)).map { i in
-            let s = items[i]
-            return SessionSummary(
-                sessionId: String(cString: s.session_id),
-                title: s.title.map { String(cString: $0) },
-                channel: Channel.fromC(s.channel),
-                createdAt: String(cString: s.created_at),
-                updatedAt: String(cString: s.updated_at),
-                lastMessage: convertMessage(s.last_message)
-            )
-        }
-    }
-
-    func withSendMessagePayload<R>(
-        _ payload: SendMessagePayload,
-        body: (OrigonSendMessagePayload) -> R
-    ) -> R {
-        let textCStr: UnsafeMutablePointer<CChar>? = payload.text.flatMap { strdup($0) }
-        let htmlCStr: UnsafeMutablePointer<CChar>? = payload.html.flatMap { strdup($0) }
-        let typeCStr: UnsafeMutablePointer<CChar>? = payload.type.flatMap { strdup($0) }
-
-        defer {
-            textCStr.map { free($0) }
-            htmlCStr.map { free($0) }
-            typeCStr.map { free($0) }
-        }
-
-        // Convert attachments
-        var cAttachments = payload.attachments.map { att -> OrigonAttachmentInfo in
-            OrigonAttachmentInfo(
-                media_id: strdup(att.mediaId),
-                url: strdup(att.url)
-            )
-        }
-        defer {
-            for i in 0..<cAttachments.count {
-                free(cAttachments[i].media_id)
-                free(cAttachments[i].url)
-            }
-        }
-
-        // Convert meta
-        var cMeta = payload.meta.map { (k, v) -> OrigonKeyValue in
-            OrigonKeyValue(key: strdup(k), value: strdup(v))
-        }
-        defer {
-            for i in 0..<cMeta.count {
-                free(cMeta[i].key)
-                free(cMeta[i].value)
-            }
-        }
-
-        // Convert results to buffers
-        return payload.context.withOptionalUnsafeBytes { contextBuf in
-            withArrayOfOrigonBuffers(payload.results) { buffers in
-                cAttachments.withUnsafeMutableBufferPointer { attBuf in
-                    cMeta.withUnsafeMutableBufferPointer { metaBuf in
-                        let cPayload = OrigonSendMessagePayload(
-                            text: textCStr.map { UnsafePointer($0) },
-                            html: htmlCStr.map { UnsafePointer($0) },
-                            context: contextBuf?.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                            context_len: UInt32(contextBuf?.count ?? 0),
-                            attachments: attBuf.baseAddress.map { UnsafePointer($0) },
-                            attachments_len: UInt32(payload.attachments.count),
-                            type: typeCStr.map { UnsafePointer($0) },
-                            results: buffers.baseAddress.map { UnsafePointer($0) },
-                            results_len: UInt32(payload.results.count),
-                            meta: metaBuf.baseAddress.map { UnsafePointer($0) },
-                            meta_len: UInt32(payload.meta.count)
-                        )
-                        return body(cPayload)
-                    }
+    /// Attach to a session whose ``StartSessionResponse`` was obtained
+    /// out of band (multi-device handoff, deeplink, persisted session).
+    public func joinSession(_ input: JoinSessionInput) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc: Int32 = input.sessionId.withCString { sidPtr in
+            input.url.withCString { urlPtr in
+                input.token.withCString { tokPtr in
+                    var raw = SessionJoinSessionInput(
+                        channel: input.channel.toC(),
+                        session_id: sidPtr,
+                        url: urlPtr,
+                        token: tokPtr
+                    )
+                    return session_client_join_session(handle, &raw, &err)
                 }
             }
         }
+        if rc != 0 { throw OrigonError.consume(&err) }
     }
-}
 
-// MARK: - ConnectError mapping
+    public func endSession(_ id: String) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = id.withCString { session_client_end_session(handle, $0, &err) }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
 
-extension ConnectError {
-    /// Translate a populated `OrigonConnectError` into the Swift enum.
-    /// Safe on a zero-initialized struct (returns `.unknown`).
-    static func fromC(_ raw: OrigonConnectError) -> ConnectError {
-        let code = raw.code.map { String(cString: $0) } ?? ""
-        let message = raw.message.map { String(cString: $0) } ?? ""
-        switch raw.kind {
-        case ORIGON_CONNECT_ERROR_MISSING_FIELD:
-            return .missingField(field: code.isEmpty ? "unknown" : code)
-        case ORIGON_CONNECT_ERROR_TRANSPORT:
-            return .transport(message: message)
-        case ORIGON_CONNECT_ERROR_FORBIDDEN:
-            return .forbidden(code: code, message: message)
-        case ORIGON_CONNECT_ERROR_HTTP:
-            return .http(status: Int(raw.status), code: code, message: message)
-        case ORIGON_CONNECT_ERROR_SERVER_UNAVAILABLE:
-            return .serverUnavailable(status: Int(raw.status))
+    public func endAllSessions() throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = session_client_end_all_sessions(handle, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// `GET /sessions` — prior sessions for the configured `userId`.
+    public func getSessions() throws -> [SessionSummary] {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var jsonPtr: UnsafeMutablePointer<CChar>?
+        let rc = session_client_get_sessions(handle, &jsonPtr, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+        guard let jsonPtr else { return [] }
+        defer { session_string_free(jsonPtr) }
+        let json = String(cString: jsonPtr)
+        guard let data = json.data(using: .utf8) else { return [] }
+        do {
+            return try JSONDecoder().decode([SessionSummary].self, from: data)
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "decode getSessions: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// `GET /session/<id>` — history for one session.
+    public func getSession(id: String) throws -> SessionHistory {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var jsonPtr: UnsafeMutablePointer<CChar>?
+        let rc = id.withCString {
+            session_client_get_session(handle, $0, &jsonPtr, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+        guard let jsonPtr else { return SessionHistory(history: []) }
+        defer { session_string_free(jsonPtr) }
+        let json = String(cString: jsonPtr)
+        guard let data = json.data(using: .utf8) else {
+            return SessionHistory(history: [])
+        }
+        do {
+            return try JSONDecoder().decode(SessionHistory.self, from: data)
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "decode getSession: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Snapshot of every active session.
+    public func activeSessions() throws -> [ActiveSession] {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var jsonPtr: UnsafeMutablePointer<CChar>?
+        let rc = session_client_active_session_ids(handle, &jsonPtr, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+        guard let jsonPtr else { return [] }
+        defer { session_string_free(jsonPtr) }
+        let json = String(cString: jsonPtr)
+
+        guard
+            let data = json.data(using: .utf8),
+            let array = try? JSONSerialization.jsonObject(with: data) as? [[String: String]]
+        else {
+            return []
+        }
+        return array.compactMap { dict in
+            guard
+                let id = dict["id"],
+                let chRaw = dict["channel"],
+                let channel = Channel.fromWire(chRaw)
+            else { return nil }
+            return ActiveSession(sessionId: id, channel: channel)
+        }
+    }
+
+    // MARK: - Voice controls
+
+    public func setMute(id: String, muted: Bool) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = id.withCString {
+            session_client_set_mute(handle, $0, muted ? 1 : 0, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    public func setMuteAll(muted: Bool) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = session_client_set_mute_all(handle, muted ? 1 : 0, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// Returns the new hold state.
+    public func toggleHold(id: String) throws -> Bool {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var state: Int32 = 0
+        let rc = id.withCString {
+            session_client_toggle_hold(handle, $0, &state, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+        return state != 0
+    }
+
+    /// Send a DTMF digit. `digit` must be one of `0-9`, `*`, `#`,
+    /// `A-D` per RFC 4733.
+    public func sendDtmf(id: String, digit: Character, durationMs: UInt32) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        guard let ascii = digit.asciiValue else {
+            throw OrigonError(kind: .other, message: "DTMF digit must be ASCII")
+        }
+        var err = SessionError()
+        let rc = id.withCString {
+            session_client_send_dtmf(handle, $0, CChar(bitPattern: ascii), durationMs, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    // MARK: - Events
+
+    /// Polls the next event. Returns `nil` when the queue is idle.
+    ///
+    /// Loops internally to skip chat-side events (message added/
+    /// updated, tool calls) that are not yet surfaced — a `nil` return
+    /// means "queue empty", not "next event was a chat event".
+    public func pollEvent() -> ClientEvent? {
+        guard let handle else { return nil }
+        while true {
+            var ev = SessionEvent()
+            let kind = session_client_poll_event(handle, &ev)
+            if kind == SESSION_EVENT_NONE { return nil }
+            let mapped = mapEvent(ev)
+            session_event_clear(&ev)
+            if let mapped { return mapped }
+            // chat event we don't surface yet — loop and try next.
+        }
+    }
+
+    // MARK: - Private
+
+    private func mapEvent(_ ev: SessionEvent) -> ClientEvent? {
+        guard let sidPtr = ev.session_id else { return nil }
+        let sid = String(cString: sidPtr)
+
+        switch ev.kind {
+        case SESSION_EVENT_MESSAGE_ADDED, SESSION_EVENT_MESSAGE_UPDATED, SESSION_EVENT_TOOL_CALLS:
+            return nil
+
+        case SESSION_EVENT_SESSION_UPDATED:
+            let new = ev.new_session_id.map { String(cString: $0) } ?? ""
+            return .sessionUpdated(sessionId: sid, newSessionId: new)
+
+        case SESSION_EVENT_CONTROL_UPDATED:
+            return .controlUpdated(sessionId: sid, control: Control.fromC(ev.control))
+
+        case SESSION_EVENT_TYPING:
+            return .typing(sessionId: sid, isTyping: ev.typing != 0)
+
+        case SESSION_EVENT_CONNECTED:
+            return .connected(sessionId: sid)
+
+        case SESSION_EVENT_RECONNECTING:
+            return .reconnecting(
+                sessionId: sid,
+                attempt: ev.reconnect_attempt,
+                reason: DisconnectReason.fromC(ev.disconnect_reason)
+            )
+
+        case SESSION_EVENT_RECONNECTED:
+            return .reconnected(sessionId: sid)
+
+        case SESSION_EVENT_PEER_ATTACHED:
+            let peer = ev.peer_endpoint_id.map { String(cString: $0) } ?? ""
+            return .peerAttached(sessionId: sid, peerEndpointId: peer, alias: ev.peer_alias)
+
+        case SESSION_EVENT_PEER_DETACHED:
+            let peer = ev.peer_endpoint_id.map { String(cString: $0) } ?? ""
+            return .peerDetached(sessionId: sid, peerEndpointId: peer, alias: ev.peer_alias)
+
+        case SESSION_EVENT_DISCONNECTED:
+            return .disconnected(
+                sessionId: sid,
+                reason: DisconnectReason.fromC(ev.disconnect_reason)
+            )
+
+        case SESSION_EVENT_CALL_ERROR:
+            let msg: String? = ev.call_error_present != 0
+                ? ev.call_error_message.map { String(cString: $0) }
+                : nil
+            return .callError(sessionId: sid, message: msg)
+
         default:
-            return .unknown(message: message.isEmpty ? "client create failed" : message)
+            return nil
         }
     }
 }
 
-// MARK: - AttachmentPolicy helpers
+// MARK: - Conversion helpers
 
-extension AttachmentPolicy {
-    /// Fallback returned when the native layer refuses to hand back the
-    /// policy (e.g. null handle). All categories disabled, zero size.
-    static let disabled = AttachmentPolicy(
-        images: AttachmentRule(enabled: false, maxSize: 0),
-        documents: AttachmentRule(enabled: false, maxSize: 0),
-        videos: AttachmentRule(enabled: false, maxSize: 0),
-        audio: AttachmentRule(enabled: false, maxSize: 0)
-    )
+private func withOptionalCString<R>(
+    _ s: String?,
+    _ body: (UnsafePointer<CChar>?) -> R
+) -> R {
+    if let s {
+        return s.withCString { body($0) }
+    } else {
+        return body(nil)
+    }
 }
 
-// MARK: - Private Helpers
-
-private extension Channel {
-    func toCChannel() -> OrigonChannel {
+extension Channel {
+    func toC() -> Int32 {
         switch self {
-        case .chat: return ORIGON_CHANNEL_CHAT
-        case .voice: return ORIGON_CHANNEL_VOICE
+        case .chat: return SESSION_CHANNEL_CHAT
+        case .voice: return SESSION_CHANNEL_VOICE
         }
     }
 
-    static func fromC(_ c: OrigonChannel) -> Channel {
-        switch c {
-        case ORIGON_CHANNEL_VOICE: return .voice
-        default: return .chat
-        }
+    static func fromC(_ c: Int32) -> Channel {
+        c == SESSION_CHANNEL_VOICE ? .voice : .chat
     }
-}
 
-private extension Control {
-    static func fromC(_ c: OrigonControl) -> Control {
-        switch c {
-        case ORIGON_CONTROL_HUMAN: return .human
-        default: return .agent
+    static func fromWire(_ s: String) -> Channel? {
+        switch s {
+        case "voice": return .voice
+        case "chat": return .chat
+        default: return nil
         }
     }
 }
 
-private extension MessageRole {
-    static func fromC(_ c: OrigonMessageRole) -> MessageRole {
-        switch c {
-        case ORIGON_MESSAGE_ROLE_USER: return .user
-        case ORIGON_MESSAGE_ROLE_SUPERVISOR: return .supervisor
-        case ORIGON_MESSAGE_ROLE_SYSTEM: return .system
-        case ORIGON_MESSAGE_ROLE_TOOL: return .tool
-        default: return .assistant
-        }
+extension Control {
+    static func fromC(_ c: Int32) -> Control {
+        c == SESSION_CONTROL_HUMAN ? .human : .agent
     }
 }
 
-private extension Optional where Wrapped == Data {
-    func withOptionalUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer?) -> R) -> R {
+extension Platform {
+    func toC() -> Int32 {
         switch self {
-        case .some(let data):
-            return data.withUnsafeBytes { body($0) }
-        case .none:
-            return body(nil)
+        case .none: return SESSION_PLATFORM_NONE
+        case .mobile: return SESSION_PLATFORM_MOBILE
+        case .web: return SESSION_PLATFORM_WEB
         }
     }
 }
 
-private func withArrayOfOrigonBuffers<R>(_ dataArray: [Data], body: (UnsafeMutableBufferPointer<OrigonBuffer>) -> R) -> R {
-    if dataArray.isEmpty {
-        return body(UnsafeMutableBufferPointer(start: nil, count: 0))
+extension DisconnectReason {
+    static func fromC(_ r: SessionDisconnectReason) -> DisconnectReason {
+        switch r.kind {
+        case SESSION_DISCONNECT_REASON_LOCAL_CLOSE: return .localClose
+        case SESSION_DISCONNECT_REASON_NETWORK_LOSS: return .networkLoss
+        case SESSION_DISCONNECT_REASON_ENDPOINT_NOT_PROVISIONED: return .endpointNotProvisioned
+        case SESSION_DISCONNECT_REASON_ENDPOINT_ALREADY_CONNECTED: return .endpointAlreadyConnected
+        case SESSION_DISCONNECT_REASON_TOKEN_INVALID: return .tokenInvalid
+        case SESSION_DISCONNECT_REASON_TOKEN_EXPIRED: return .tokenExpired
+        case SESSION_DISCONNECT_REASON_TOKEN_REPLAYED: return .tokenReplayed
+        case SESSION_DISCONNECT_REASON_PROTOCOL_VIOLATION: return .protocolViolation
+        case SESSION_DISCONNECT_REASON_CAPABILITY_MISSING: return .capabilityMissing
+        case SESSION_DISCONNECT_REASON_ILLEGAL_STATE: return .illegalState
+        case SESSION_DISCONNECT_REASON_RESOURCE_EXHAUSTED: return .resourceExhausted
+        case SESSION_DISCONNECT_REASON_REPLAY_LOST: return .replayLost
+        case SESSION_DISCONNECT_REASON_SERVER_CLOSED:
+            let detail = r.server_detail.map { String(cString: $0) }
+            return .serverClosed(code: r.server_code, detail: detail)
+        case SESSION_DISCONNECT_REASON_TRANSPORT_CLOSED:
+            let detail = r.server_detail.map { String(cString: $0) }
+            return .transportClosed(detail: detail)
+        default:
+            let detail = r.server_detail.map { String(cString: $0) }
+            return .serverClosed(code: r.server_code, detail: detail)
+        }
     }
+}
 
-    // Pin each Data and build OrigonBuffer array
-    var buffers = [OrigonBuffer]()
-    buffers.reserveCapacity(dataArray.count)
-
-    // We need to keep NSData references alive
-    let nsDatas = dataArray.map { $0 as NSData }
-    for ns in nsDatas {
-        buffers.append(OrigonBuffer(
-            data: ns.bytes.assumingMemoryBound(to: UInt8.self),
-            len: UInt32(ns.length)
-        ))
+extension OrigonError {
+    /// Read a populated `SessionError`, clear it, and return a Swift
+    /// `OrigonError`. Use on every `-1` return path.
+    static func consume(_ err: inout SessionError) -> OrigonError {
+        let kind = OrigonError.Kind(rawValue: Int(err.kind)) ?? .unknown
+        let status = Int(err.status)
+        let code = err.code.map { String(cString: $0) }
+        let message = err.message.map { String(cString: $0) }
+        session_error_clear(&err)
+        return OrigonError(kind: kind, statusCode: status, code: code, message: message)
     }
-
-    return buffers.withUnsafeMutableBufferPointer { body($0) }
 }
