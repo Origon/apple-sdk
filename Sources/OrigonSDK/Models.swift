@@ -7,9 +7,30 @@ public enum Channel: String, Codable, Sendable {
     case voice
 }
 
-public enum Control: Sendable {
-    case agent
-    case human
+public enum SessionControl: String, Codable, Sendable {
+    case ai
+    case user
+}
+
+public enum MessageRole: String, Codable, Sendable {
+    case ai
+    case external
+    case user
+    case system
+}
+
+/// Delivery status of a `Message`.
+public enum MessageStatus: String, Codable, Sendable {
+    case sending
+    case delivered
+    case failed
+}
+
+/// Generation state of a `Message`. `streaming` while tokens are still
+/// arriving from the agent; `completed` once finalised.
+public enum MessageState: String, Codable, Sendable {
+    case streaming
+    case completed
 }
 
 public enum Platform: Sendable {
@@ -180,24 +201,56 @@ public struct ServerConfig: Sendable {
 
 // MARK: - Session history
 
+/// Uploaded media descriptor. Surfaced on `Message.attachments` and
+/// passed back into `SendMessagePayload.attachments`.
+public struct Attachment: Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let contentType: String
+    public let url: String
+
+    public init(id: String = "", name: String = "", contentType: String = "", url: String = "") {
+        self.id = id
+        self.name = name
+        self.contentType = contentType
+        self.url = url
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.contentType = try c.decodeIfPresent(String.self, forKey: .contentType) ?? ""
+        self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+    }
+}
+
 /// One transcript line / message. Mirrors the Rust `Message` shape.
 public struct Message: Codable, Sendable, Equatable {
-    public let role: String
+    public let role: MessageRole
     public let id: String
     public let text: String?
     public let html: String?
     public let timestamp: String?
     public let userId: String?
     public let userName: String?
+    public let attachments: [Attachment]
+    public let errorText: String?
+    public let status: MessageStatus
+    public let state: MessageState
 
     public init(
-        role: String,
+        role: MessageRole = .external,
         id: String,
         text: String? = nil,
         html: String? = nil,
         timestamp: String? = nil,
         userId: String? = nil,
-        userName: String? = nil
+        userName: String? = nil,
+        attachments: [Attachment] = [],
+        errorText: String? = nil,
+        status: MessageStatus = .delivered,
+        state: MessageState = .completed
     ) {
         self.role = role
         self.id = id
@@ -206,6 +259,37 @@ public struct Message: Codable, Sendable, Equatable {
         self.timestamp = timestamp
         self.userId = userId
         self.userName = userName
+        self.attachments = attachments
+        self.errorText = errorText
+        self.status = status
+        self.state = state
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.role = try c.decodeIfPresent(MessageRole.self, forKey: .role) ?? .external
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        self.text = try c.decodeIfPresent(String.self, forKey: .text)
+        self.html = try c.decodeIfPresent(String.self, forKey: .html)
+        self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
+        self.userId = try c.decodeIfPresent(String.self, forKey: .userId)
+        self.userName = try c.decodeIfPresent(String.self, forKey: .userName)
+        self.attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
+        self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
+        self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
+    }
+}
+
+/// Payload for `OrigonClient.sendMessage`. Mirrors the Rust
+/// `SendMessagePayload` shape.
+public struct SendMessagePayload: Sendable {
+    public let text: String?
+    public let attachments: [Attachment]
+
+    public init(text: String? = nil, attachments: [Attachment] = []) {
+        self.text = text
+        self.attachments = attachments
     }
 }
 
@@ -251,9 +335,18 @@ public struct SessionSummary: Codable, Sendable {
 /// Returned by `OrigonClient.getSession`.
 public struct SessionHistory: Codable, Sendable {
     public let history: [Message]
+    /// Who is currently driving the session.
+    public let control: SessionControl
 
-    public init(history: [Message]) {
+    public init(history: [Message] = [], control: SessionControl = .ai) {
         self.history = history
+        self.control = control
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.history = try c.decodeIfPresent([Message].self, forKey: .history) ?? []
+        self.control = try c.decodeIfPresent(SessionControl.self, forKey: .control) ?? .ai
     }
 }
 
@@ -290,7 +383,7 @@ public enum DisconnectReason: Sendable, Equatable {
 /// crate.
 public enum ClientEvent: Sendable {
     case sessionUpdated(sessionId: String, newSessionId: String)
-    case controlUpdated(sessionId: String, control: Control)
+    case controlUpdated(sessionId: String, control: SessionControl)
     case typing(sessionId: String, isTyping: Bool)
     case connected(sessionId: String)
     case reconnecting(sessionId: String, attempt: UInt32, reason: DisconnectReason)

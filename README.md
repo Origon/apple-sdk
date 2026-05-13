@@ -122,7 +122,10 @@ try client.joinSession(JoinSessionInput(
 
 - `ClientConfig` — endpoint, bundleId, token, userId, platform, attributes (`[String: Any]?`).
 - `Channel` — `.chat`, `.voice`.
-- `Control` — `.agent`, `.human`.
+- `SessionControl` — `.ai`, `.user`.
+- `MessageRole` — `.ai`, `.external`, `.user`, `.system`.
+- `MessageStatus` — `.sending`, `.delivered`, `.failed`.
+- `MessageState` — `.streaming`, `.completed`.
 - `Platform` — `.mobile`, `.web`, `.none`.
 - `StartSessionOptions` — channel, optional sessionId, optional `data` (raw JSON).
 - `StartSessionResponse` — sessionId, url, token.
@@ -132,7 +135,8 @@ try client.joinSession(JoinSessionInput(
 - `ServerConfig` — full `/config` snapshot.
 - `DisconnectReason` — structured disconnect reasons (incl. `.serverClosed(code:detail:)`).
 - `ClientEvent` — `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`.
-- `Message`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
+- `Message`, `Attachment`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
+- `SendMessagePayload` — `text`, `attachments` (input shape for `send_message` once chat is integrated).
 - `OrigonError` — structured error with `kind`, `statusCode`, `code`, `message`.
 
 Chat-side messaging and attachments (`send_message`,

@@ -356,7 +356,7 @@ public final class OrigonClient: @unchecked Sendable {
         let sid = String(cString: sidPtr)
 
         switch ev.kind {
-        case SESSION_EVENT_MESSAGE_ADDED, SESSION_EVENT_MESSAGE_UPDATED, SESSION_EVENT_TOOL_CALLS:
+        case SESSION_EVENT_MESSAGE_ADDED, SESSION_EVENT_MESSAGE_UPDATED:
             return nil
 
         case SESSION_EVENT_SESSION_UPDATED:
@@ -364,7 +364,7 @@ public final class OrigonClient: @unchecked Sendable {
             return .sessionUpdated(sessionId: sid, newSessionId: new)
 
         case SESSION_EVENT_CONTROL_UPDATED:
-            return .controlUpdated(sessionId: sid, control: Control.fromC(ev.control))
+            return .controlUpdated(sessionId: sid, control: SessionControl.fromC(ev.control))
 
         case SESSION_EVENT_TYPING:
             return .typing(sessionId: sid, isTyping: ev.typing != 0)
@@ -442,9 +442,9 @@ extension Channel {
     }
 }
 
-extension Control {
-    static func fromC(_ c: Int32) -> Control {
-        c == SESSION_CONTROL_HUMAN ? .human : .agent
+extension SessionControl {
+    static func fromC(_ c: Int32) -> SessionControl {
+        c == SESSION_CONTROL_USER ? .user : .ai
     }
 }
 
