@@ -97,6 +97,48 @@ try client.joinSession(JoinSessionInput(
 ))
 ```
 
+### Chat
+
+`sendMessage`, `notifyTyping`, and `stopTyping` all require an active
+chat session. **Call `startSession(channel: .chat, ...)` first** —
+otherwise these throw `OrigonError(kind: .noSession)`. The same
+applies after `endSession(id:)`.
+
+```swift
+// Outbound send. The SDK fires `.messageAdded` (status `.sending`)
+// before the wire round-trip and `.messageUpdated` (delivered or
+// failed) after — both surface on `pollEvent()`. The return value is
+// the server-issued Message.
+let msg = try client.sendMessage(
+    id: sessionId,
+    payload: SendMessagePayload(text: "hello", html: "hello")
+)
+
+// Typing — call per keystroke. The SDK debounces; only one outbound
+// `{state: "on"}` fires per typing burst, and a `{state: "off"}` is
+// auto-emitted after ~3 s of no further calls. Fire `stopTyping(id:)`
+// explicitly when the input clears (e.g. user deleted all text) to
+// snap the peer's "typing…" indicator off instantly.
+try client.notifyTyping(id: sessionId)
+try client.stopTyping(id: sessionId)
+```
+
+Polling chat events:
+
+```swift
+while let event = client.pollEvent() {
+    switch event {
+    case .messageAdded(let sid, let message):
+        // Store under message.localId ?? message.id
+    case .messageUpdated(let sid, let id, let message):
+        // Look up the row by id (matches the original localId / message.id)
+    case .typing(let sid, let isTyping):
+        // Show / hide "typing…" indicator
+    default: break
+    }
+}
+```
+
 ## API Reference
 
 ### OrigonClient
@@ -111,6 +153,9 @@ try client.joinSession(JoinSessionInput(
 | `setMute(id:muted:)` / `setMuteAll(muted:)`                                                                   | Voice — absolute mute.                                                            |
 | `toggleHold(id:)`                                                                                             | Voice — toggle hold. Returns the new state.                                       |
 | `sendDtmf(id:digit:durationMs:)`                                                                              | Voice — send a DTMF digit per RFC 4733.                                           |
+| `sendMessage(id:payload:)`                                                                                    | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
+| `notifyTyping(id:)`                                                                                           | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs.              |
+| `stopTyping(id:)`                                                                                             | Chat — force outbound typing state to "off" immediately.                          |
 | `activeSessions()`                                                                                            | Snapshot of every active session.                                                 |
 | `getSessions()`                                                                                               | `GET /sessions` — list prior sessions for the configured `userId`.                |
 | `getSession(id:)`                                                                                             | `GET /session/<id>` — transcript for one session.                                 |
@@ -134,14 +179,15 @@ try client.joinSession(JoinSessionInput(
 - `AttachmentRule` / `AttachmentPolicy` — tenant policy for attachments.
 - `ServerConfig` — full `/config` snapshot.
 - `DisconnectReason` — structured disconnect reasons (incl. `.serverClosed(code:detail:)`).
-- `ClientEvent` — `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`.
-- `Message`, `Attachment`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
-- `SendMessagePayload` — `text`, `attachments` (input shape for `send_message` once chat is integrated).
+- `ClientEvent` — `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`.
+- `Message` — typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`.
+- `Attachment`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
+- `SendMessagePayload` — `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`).
 - `OrigonError` — structured error with `kind`, `statusCode`, `code`, `message`.
 
-Chat-side messaging and attachments (`send_message`,
-`upload_attachment`, etc.) will be added when the underlying chat
-plane lands in the session crate.
+Attachment uploads (`upload_attachment` etc.) are not yet wired
+through the SDK; the `attachments` field on `SendMessagePayload` is
+reserved for that future surface.
 
 ## License
 

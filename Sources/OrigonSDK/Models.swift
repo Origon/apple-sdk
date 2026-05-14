@@ -226,9 +226,16 @@ public struct Attachment: Codable, Sendable, Equatable {
 }
 
 /// One transcript line / message. Mirrors the Rust `Message` shape.
+///
+/// For outbound sends the SDK fires `MessageAdded` with a provisional
+/// `Message(id: "", localId: <uuid>, status: .sending, ...)` before
+/// the wire round-trip. The server-issued `id` lands on the follow-up
+/// `MessageUpdated`. The stable lookup key during the sending phase is
+/// `localId`; once delivered, both `id` and `localId` are populated.
 public struct Message: Codable, Sendable, Equatable {
     public let role: MessageRole
     public let id: String
+    public let localId: String?
     public let text: String?
     public let html: String?
     public let timestamp: String?
@@ -242,6 +249,7 @@ public struct Message: Codable, Sendable, Equatable {
     public init(
         role: MessageRole = .external,
         id: String,
+        localId: String? = nil,
         text: String? = nil,
         html: String? = nil,
         timestamp: String? = nil,
@@ -254,6 +262,7 @@ public struct Message: Codable, Sendable, Equatable {
     ) {
         self.role = role
         self.id = id
+        self.localId = localId
         self.text = text
         self.html = html
         self.timestamp = timestamp
@@ -269,6 +278,7 @@ public struct Message: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.role = try c.decodeIfPresent(MessageRole.self, forKey: .role) ?? .external
         self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        self.localId = try c.decodeIfPresent(String.self, forKey: .localId)
         self.text = try c.decodeIfPresent(String.self, forKey: .text)
         self.html = try c.decodeIfPresent(String.self, forKey: .html)
         self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
@@ -282,13 +292,15 @@ public struct Message: Codable, Sendable, Equatable {
 }
 
 /// Payload for `OrigonClient.sendMessage`. Mirrors the Rust
-/// `SendMessagePayload` shape.
-public struct SendMessagePayload: Sendable {
+/// `SendMessagePayload` shape (wire keys camelCase).
+public struct SendMessagePayload: Codable, Sendable {
     public let text: String?
+    public let html: String?
     public let attachments: [Attachment]
 
-    public init(text: String? = nil, attachments: [Attachment] = []) {
+    public init(text: String? = nil, html: String? = nil, attachments: [Attachment] = []) {
         self.text = text
+        self.html = html
         self.attachments = attachments
     }
 }
@@ -376,12 +388,17 @@ public enum DisconnectReason: Sendable, Equatable {
 
 /// Async event from a session. All variants carry `sessionId` so the
 /// consumer can demultiplex when several sessions are active at once.
-///
-/// Chat-side variants (message added/updated, tool calls) are not
-/// surfaced in this iteration — `OrigonClient.pollEvent` silently skips
-/// them. They will be added when the chat plane lands in the session
-/// crate.
 public enum ClientEvent: Sendable {
+    /// A message was appended to the transcript — outbound provisional
+    /// (`status == .sending`), inbound peer message, or future AI
+    /// message. Store under the key `message.localId ?? message.id`
+    /// so `.messageUpdated` can find it.
+    case messageAdded(sessionId: String, message: Message)
+    /// A previously-added message was updated. `id` matches the lookup
+    /// key the consumer used when the row was added — equal to the
+    /// provisional's `localId` for outbound ack / failure, or
+    /// `message.id` for server-driven updates. Always non-empty.
+    case messageUpdated(sessionId: String, id: String, message: Message)
     case sessionUpdated(sessionId: String, newSessionId: String)
     case controlUpdated(sessionId: String, control: SessionControl)
     case typing(sessionId: String, isTyping: Bool)
@@ -397,7 +414,9 @@ public enum ClientEvent: Sendable {
 
     public var sessionId: String {
         switch self {
-        case .sessionUpdated(let s, _),
+        case .messageAdded(let s, _),
+             .messageUpdated(let s, _, _),
+             .sessionUpdated(let s, _),
              .controlUpdated(let s, _),
              .typing(let s, _),
              .connected(let s),

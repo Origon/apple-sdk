@@ -329,35 +329,128 @@ public final class OrigonClient: @unchecked Sendable {
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
-    // MARK: - Events
+    // MARK: - Chat
 
-    /// Polls the next event. Returns `nil` when the queue is idle.
+    /// Chat-only — send a text / HTML message on the named session.
     ///
-    /// Loops internally to skip chat-side events (message added/
-    /// updated, tool calls) that are not yet surfaced — a `nil` return
-    /// means "queue empty", not "next event was a chat event".
-    public func pollEvent() -> ClientEvent? {
-        guard let handle else { return nil }
-        while true {
-            var ev = SessionEvent()
-            let kind = session_client_poll_event(handle, &ev)
-            if kind == SESSION_EVENT_NONE { return nil }
-            let mapped = mapEvent(ev)
-            session_event_clear(&ev)
-            if let mapped { return mapped }
-            // chat event we don't surface yet — loop and try next.
+    /// Requires an active chat session for `id` (call ``startSession``
+    /// first). The SDK fires ``ClientEvent/messageAdded(sessionId:message:)``
+    /// (provisional, `status == .sending`) before the wire round-trip
+    /// and ``ClientEvent/messageUpdated(sessionId:id:message:)`` (delivered
+    /// or failed) after — both surface on ``pollEvent``. Returns the
+    /// server-issued `Message`.
+    @discardableResult
+    public func sendMessage(id: String, payload: SendMessagePayload) throws -> Message {
+        guard let handle else { throw OrigonError.notInitialized }
+        let payloadJson = try Self.encodePayload(payload)
+        var err = SessionError()
+        var outJson: UnsafeMutablePointer<CChar>?
+        let rc: Int32 = id.withCString { idPtr in
+            payloadJson.withCString { jsonPtr in
+                session_client_send_message(handle, idPtr, jsonPtr, &outJson, &err)
+            }
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+        guard let outJson else {
+            throw OrigonError(kind: .other, message: "send_message: missing response body")
+        }
+        defer { session_string_free(outJson) }
+        let json = String(cString: outJson)
+        guard let data = json.data(using: .utf8) else {
+            throw OrigonError(kind: .other, message: "send_message: utf8 decode")
+        }
+        do {
+            return try JSONDecoder().decode(Message.self, from: data)
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "send_message decode: \(error.localizedDescription)"
+            )
         }
     }
 
+    /// Chat-only — register a keystroke on the named session. Cheap to
+    /// call from `editingChanged`; the SDK debounces outbound
+    /// `<sessionUrl>/typing` POSTs so only one wire call fires per
+    /// typing burst.
+    public func notifyTyping(id: String) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = id.withCString {
+            session_client_notify_typing(handle, $0, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// Chat-only — force outbound typing state to "off" immediately,
+    /// cancelling any in-flight debounce. UI fires this on empty-text
+    /// transitions; the SDK also fires it implicitly on
+    /// ``sendMessage`` and on ``endSession``.
+    public func stopTyping(id: String) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = id.withCString {
+            session_client_stop_typing(handle, $0, &err)
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    // MARK: - Events
+
+    /// Polls the next event. Returns `nil` when the queue is idle.
+    public func pollEvent() -> ClientEvent? {
+        guard let handle else { return nil }
+        var ev = SessionEvent()
+        let kind = session_client_poll_event(handle, &ev)
+        if kind == SESSION_EVENT_NONE { return nil }
+        let mapped = mapEvent(ev)
+        session_event_clear(&ev)
+        return mapped
+    }
+
     // MARK: - Private
+
+    /// JSON-encode a `SendMessagePayload` for the C FFI. Throws
+    /// `OrigonError.other` on encode failure.
+    private static func encodePayload(_ payload: SendMessagePayload) throws -> String {
+        do {
+            let data = try JSONEncoder().encode(payload)
+            guard let s = String(data: data, encoding: .utf8) else {
+                throw OrigonError(kind: .other, message: "payload encode: utf8")
+            }
+            return s
+        } catch let e as OrigonError {
+            throw e
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "payload encode: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Decode the FFI's `message_json` field into a Swift `Message`.
+    /// Returns `nil` on any failure (caller treats as "drop the event").
+    private static func decodeMessage(_ cstr: UnsafeMutablePointer<CChar>?) -> Message? {
+        guard let cstr else { return nil }
+        let json = String(cString: cstr)
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(Message.self, from: data)
+    }
 
     private func mapEvent(_ ev: SessionEvent) -> ClientEvent? {
         guard let sidPtr = ev.session_id else { return nil }
         let sid = String(cString: sidPtr)
 
         switch ev.kind {
-        case SESSION_EVENT_MESSAGE_ADDED, SESSION_EVENT_MESSAGE_UPDATED:
-            return nil
+        case SESSION_EVENT_MESSAGE_ADDED:
+            guard let msg = Self.decodeMessage(ev.message_json) else { return nil }
+            return .messageAdded(sessionId: sid, message: msg)
+
+        case SESSION_EVENT_MESSAGE_UPDATED:
+            guard let msg = Self.decodeMessage(ev.message_json) else { return nil }
+            let updateId = ev.update_id.map { String(cString: $0) } ?? ""
+            return .messageUpdated(sessionId: sid, id: updateId, message: msg)
 
         case SESSION_EVENT_SESSION_UPDATED:
             let new = ev.new_session_id.map { String(cString: $0) } ?? ""
