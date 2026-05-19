@@ -203,17 +203,38 @@ public struct ServerConfig: Sendable {
 
 /// Uploaded media descriptor. Surfaced on `Message.attachments` and
 /// passed back into `SendMessagePayload.attachments`.
+///
+/// Set `localUrl` to a local preview source (e.g. `file://` to a cached
+/// pick) before `sendMessage`; the SDK echoes it back on
+/// `MessageUpdated` without leaking it to the wire. See
+/// `client-sdk/session/docs/contract.md#attachment-flow`.
 public struct Attachment: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let contentType: String
     public let url: String
+    public let localUrl: String?
 
-    public init(id: String = "", name: String = "", contentType: String = "", url: String = "") {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case contentType
+        case url
+        case localUrl
+    }
+
+    public init(
+        id: String = "",
+        name: String = "",
+        contentType: String = "",
+        url: String = "",
+        localUrl: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.contentType = contentType
         self.url = url
+        self.localUrl = localUrl
     }
 
     public init(from decoder: Decoder) throws {
@@ -222,6 +243,35 @@ public struct Attachment: Codable, Sendable, Equatable {
         self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         self.contentType = try c.decodeIfPresent(String.self, forKey: .contentType) ?? ""
         self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        self.localUrl = try c.decodeIfPresent(String.self, forKey: .localUrl)
+    }
+
+    /// Custom encoder so `localUrl: null` is omitted rather than
+    /// written when `nil`. Swift's synthesised encoder doesn't match
+    /// `encodeIfPresent` for an `Optional` `let`.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(contentType, forKey: .contentType)
+        try c.encode(url, forKey: .url)
+        try c.encodeIfPresent(localUrl, forKey: .localUrl)
+    }
+}
+
+/// Progress notification surfaced from
+/// `OrigonClient.uploadAttachment`. `totalBytes` is `nil` when the
+/// payload length is unknown (chunked / streaming sources); `percent`
+/// is computed by the SDK when `totalBytes` is known and non-zero.
+public struct UploadProgress: Codable, Sendable, Equatable {
+    public let bytesUploaded: UInt64
+    public let totalBytes: UInt64?
+    public let percent: UInt8?
+
+    public init(bytesUploaded: UInt64, totalBytes: UInt64?, percent: UInt8?) {
+        self.bytesUploaded = bytesUploaded
+        self.totalBytes = totalBytes
+        self.percent = percent
     }
 }
 
@@ -377,6 +427,10 @@ public enum DisconnectReason: Sendable, Equatable {
     case illegalState
     case resourceExhausted
     case replayLost
+    /// `0x1040` — server closed the session cleanly because the bridge
+    /// collapsed (remote SIP leg hung up, or the engine drained the
+    /// call). Terminal: no reconnect attempts follow.
+    case sessionEnded
     case serverClosed(code: UInt64, detail: String?)
     /// Local transport failed before the MOQ session was established
     /// (QUIC dial / DNS / TLS / etc.). `detail` carries the underlying
@@ -436,7 +490,7 @@ public enum ClientEvent: Sendable {
 /// Structured error thrown by `OrigonClient`. Mirrors the Rust
 /// `ClientError` discriminants — dispatch on `kind` for typed handling,
 /// or read `message` / `code` for display.
-public struct OrigonError: Error, Sendable, CustomStringConvertible {
+public struct OrigonError: Error, Sendable, CustomStringConvertible, LocalizedError {
     public let kind: Kind
     /// HTTP status when applicable (`.http` / `.serverUnavailable`); 0 otherwise.
     public let statusCode: Int
@@ -454,6 +508,10 @@ public struct OrigonError: Error, Sendable, CustomStringConvertible {
         case http = 6
         case attachment = 7
         case other = 8
+        /// Upload was cancelled via `deleteAttachment(sessionId:attachmentId:)`
+        /// using the same `uploadId` passed to `uploadAttachment`. Only
+        /// surfaced from `uploadAttachment`. See its doc for the pattern.
+        case cancelled = 9
     }
 
     public init(kind: Kind, statusCode: Int = 0, code: String? = nil, message: String? = nil) {
@@ -468,6 +526,13 @@ public struct OrigonError: Error, Sendable, CustomStringConvertible {
         if let code, !code.isEmpty { return code }
         return "OrigonError(kind: \(kind))"
     }
+
+    /// `LocalizedError` conformance — makes `error.localizedDescription`
+    /// surface the server-supplied message instead of Swift's generic
+    /// fallback. Mirrors ``description`` so consumers see the same text
+    /// whether they read `\(error)`, `error.description`, or
+    /// `error.localizedDescription`.
+    public var errorDescription: String? { description }
 
     public static let notInitialized = OrigonError(
         kind: .notInitialized,

@@ -395,6 +395,198 @@ public final class OrigonClient: @unchecked Sendable {
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
+    // MARK: - Attachments
+
+    /// Chat-only — stream a file at `path` to the named chat session
+    /// and return the server-issued ``Attachment``.
+    ///
+    /// For security-scoped `URL`s from `UIDocumentPicker` use the
+    /// `url:` overload; for in-memory `Data` use the `data:` overload.
+    /// Pass `uploadId` (default: fresh UUID) and hand the same value to
+    /// ``deleteAttachment(sessionId:attachmentId:)`` to cancel
+    /// in-flight. `onProgress` is invoked on `@MainActor`.
+    ///
+    /// See `client-sdk/session/docs/contract.md#attachment-flow` for
+    /// MIME detection, policy prechecks, and error code semantics.
+    public func uploadAttachment(
+        sessionId: String,
+        uploadId: String = UUID().uuidString,
+        path: String,
+        fileName: String,
+        onProgress: (@MainActor @Sendable (UploadProgress) -> Void)? = nil
+    ) async throws -> Attachment {
+        guard let handle else { throw OrigonError.notInitialized }
+
+        // Retain the closure across the C boundary; released on every
+        // exit path below.
+        let boxPtr: UnsafeMutableRawPointer? = onProgress.map { closure in
+            Unmanaged.passRetained(UploadProgressBox(closure: closure)).toOpaque()
+        }
+
+        let trampoline: SessionUploadProgressCallback? = onProgress == nil ? nil : { ctx, uploaded, total in
+            guard let ctx else { return }
+            let box = Unmanaged<UploadProgressBox>.fromOpaque(ctx).takeUnretainedValue()
+            let totalBytes: UInt64? = total < 0 ? nil : UInt64(total)
+            let percent: UInt8?
+            if let t = totalBytes, t > 0 {
+                let p = (uploaded * 100) / t
+                percent = UInt8(min(p, 100))
+            } else {
+                percent = nil
+            }
+            let progress = UploadProgress(
+                bytesUploaded: uploaded,
+                totalBytes: totalBytes,
+                percent: percent
+            )
+            Task { @MainActor in
+                box.closure(progress)
+            }
+        }
+
+        let handleRef = handle
+        do {
+            let attachment = try await Task.detached {
+                try Self.invokeUploadAttachment(
+                    handle: handleRef,
+                    sessionId: sessionId,
+                    uploadId: uploadId,
+                    path: path,
+                    fileName: fileName,
+                    callback: trampoline,
+                    ctx: boxPtr
+                )
+            }.value
+            if let boxPtr {
+                Unmanaged<UploadProgressBox>.fromOpaque(boxPtr).release()
+            }
+            return attachment
+        } catch {
+            if let boxPtr {
+                Unmanaged<UploadProgressBox>.fromOpaque(boxPtr).release()
+            }
+            throw error
+        }
+    }
+
+    /// Convenience overload that materialises in-memory `data` under
+    /// `NSTemporaryDirectory()` and delegates to the path-based
+    /// overload. Temp file is removed on every exit path.
+    public func uploadAttachment(
+        sessionId: String,
+        uploadId: String = UUID().uuidString,
+        data: Data,
+        fileName: String,
+        onProgress: (@MainActor @Sendable (UploadProgress) -> Void)? = nil
+    ) async throws -> Attachment {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        // Preserve extension so MIME sniff's filename fallback still works.
+        let ext = (fileName as NSString).pathExtension
+        let unique = UUID().uuidString + (ext.isEmpty ? "" : ".\(ext)")
+        let tempURL = tempDir.appendingPathComponent(unique)
+        try data.write(to: tempURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        return try await uploadAttachment(
+            sessionId: sessionId,
+            uploadId: uploadId,
+            path: tempURL.path,
+            fileName: fileName,
+            onProgress: onProgress
+        )
+    }
+
+    /// Convenience overload for `URL`s. Manages
+    /// `startAccessingSecurityScopedResource()` automatically for
+    /// `UIDocumentPicker`-style URLs.
+    public func uploadAttachment(
+        sessionId: String,
+        uploadId: String = UUID().uuidString,
+        url: URL,
+        fileName: String? = nil,
+        onProgress: (@MainActor @Sendable (UploadProgress) -> Void)? = nil
+    ) async throws -> Attachment {
+        let needsScoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if needsScoped { url.stopAccessingSecurityScopedResource() }
+        }
+        let resolvedName = fileName ?? url.lastPathComponent
+        return try await uploadAttachment(
+            sessionId: sessionId,
+            uploadId: uploadId,
+            path: url.path,
+            fileName: resolvedName,
+            onProgress: onProgress
+        )
+    }
+
+    /// Chat-only — dual-purpose: cancel an in-flight upload (when
+    /// `attachmentId` matches an active `uploadId`) or `DELETE` a
+    /// completed attachment by server id. See
+    /// `client-sdk/session/docs/contract.md#cancellation`.
+    public func deleteAttachment(sessionId: String, attachmentId: String) async throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        let handleRef = handle
+        try await Task.detached {
+            var err = SessionError()
+            let rc = sessionId.withCString { sidPtr in
+                attachmentId.withCString { aidPtr in
+                    session_client_delete_attachment(handleRef, sidPtr, aidPtr, &err)
+                }
+            }
+            if rc != 0 { throw OrigonError.consume(&err) }
+        }.value
+    }
+
+    /// Blocking FFI call, intended for use from a detached task.
+    private static func invokeUploadAttachment(
+        handle: OpaquePointer,
+        sessionId: String,
+        uploadId: String,
+        path: String,
+        fileName: String,
+        callback: SessionUploadProgressCallback?,
+        ctx: UnsafeMutableRawPointer?
+    ) throws -> Attachment {
+        var err = SessionError()
+        var outJson: UnsafeMutablePointer<CChar>?
+        let rc: Int32 = sessionId.withCString { sidPtr in
+            uploadId.withCString { uidPtr in
+                path.withCString { pathPtr in
+                    fileName.withCString { namePtr in
+                        session_client_upload_attachment(
+                            handle,
+                            sidPtr,
+                            uidPtr,
+                            pathPtr,
+                            namePtr,
+                            callback,
+                            ctx,
+                            &outJson,
+                            &err
+                        )
+                    }
+                }
+            }
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+        guard let outJson else {
+            throw OrigonError(kind: .other, message: "upload_attachment: missing response body")
+        }
+        defer { session_string_free(outJson) }
+        let json = String(cString: outJson)
+        guard let jsonData = json.data(using: .utf8) else {
+            throw OrigonError(kind: .other, message: "upload_attachment: utf8 decode")
+        }
+        do {
+            return try JSONDecoder().decode(Attachment.self, from: jsonData)
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "upload_attachment decode: \(error.localizedDescription)"
+            )
+        }
+    }
+
     // MARK: - Events
 
     /// Polls the next event. Returns `nil` when the queue is idle.
@@ -501,6 +693,17 @@ public final class OrigonClient: @unchecked Sendable {
     }
 }
 
+// MARK: - Upload helpers
+
+/// Reference wrapper so the `onProgress` closure can survive a
+/// `void *ctx` round-trip across the C boundary.
+private final class UploadProgressBox: @unchecked Sendable {
+    let closure: @MainActor @Sendable (UploadProgress) -> Void
+    init(closure: @escaping @MainActor @Sendable (UploadProgress) -> Void) {
+        self.closure = closure
+    }
+}
+
 // MARK: - Conversion helpers
 
 private func withOptionalCString<R>(
@@ -566,6 +769,7 @@ extension DisconnectReason {
         case SESSION_DISCONNECT_REASON_ILLEGAL_STATE: return .illegalState
         case SESSION_DISCONNECT_REASON_RESOURCE_EXHAUSTED: return .resourceExhausted
         case SESSION_DISCONNECT_REASON_REPLAY_LOST: return .replayLost
+        case SESSION_DISCONNECT_REASON_SESSION_ENDED: return .sessionEnded
         case SESSION_DISCONNECT_REASON_SERVER_CLOSED:
             let detail = r.server_detail.map { String(cString: $0) }
             return .serverClosed(code: r.server_code, detail: detail)
