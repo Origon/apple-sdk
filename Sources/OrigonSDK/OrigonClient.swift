@@ -29,8 +29,9 @@ public final class OrigonClient: @unchecked Sendable {
         var err = SessionError()
         var newHandle: OpaquePointer?
         let attributesJson = try Self.encodeAttributes(config.attributes)
+        let bundleId = Bundle.main.bundleIdentifier
         let rc: Int32 = config.endpoint.withCString { endpointPtr in
-            withOptionalCString(config.bundleId) { bundlePtr in
+            withOptionalCString(bundleId) { bundlePtr in
                 withOptionalCString(config.token) { tokenPtr in
                     withOptionalCString(config.userId) { userIdPtr in
                         withOptionalCString(attributesJson) { attrsPtr in

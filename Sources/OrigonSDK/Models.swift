@@ -44,9 +44,6 @@ public enum Platform: Sendable {
 /// Configuration for creating an `OrigonClient`.
 public struct ClientConfig: Sendable {
     public let endpoint: String
-    /// iOS application bundle identifier. When set, sent as `X-Bundle-Id`
-    /// on every HTTPS call.
-    public let bundleId: String?
     public let token: String?
     public let userId: String?
     public let platform: Platform
@@ -58,14 +55,12 @@ public struct ClientConfig: Sendable {
 
     public init(
         endpoint: String,
-        bundleId: String? = nil,
         token: String? = nil,
         userId: String? = nil,
         platform: Platform = .mobile,
         attributes: [String: Any]? = nil
     ) {
         self.endpoint = endpoint
-        self.bundleId = bundleId
         self.token = token
         self.userId = userId
         self.platform = platform

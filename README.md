@@ -44,7 +44,6 @@ OrigonClient.initLogging()
 // 1. Create the client.
 let client = try OrigonClient(config: ClientConfig(
     endpoint: "https://api.origon.ai",
-    bundleId: "com.acme.ios",
     token: "your-api-token",
     userId: "user-123"
 ))
@@ -165,7 +164,7 @@ while let event = client.pollEvent() {
 
 ### Types
 
-- `ClientConfig` — endpoint, bundleId, token, userId, platform, attributes (`[String: Any]?`).
+- `ClientConfig` — endpoint, token, userId, platform, attributes (`[String: Any]?`). The bundle identifier is resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call.
 - `Channel` — `.chat`, `.voice`.
 - `SessionControl` — `.ai`, `.user`.
 - `MessageRole` — `.ai`, `.external`, `.user`, `.system`.
