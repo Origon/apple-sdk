@@ -1,0 +1,530 @@
+import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+import OrigonSDK
+
+struct ChatView: View {
+    @Binding var sessionId: String?
+    let onMenuTap: () -> Void
+    let onNewSession: () -> Void
+    let onStartCall: () -> Void
+
+    @EnvironmentObject var sdk: SDKManager
+
+    @State private var inputText = ""
+    @State private var hasStartedSession = false
+    @State private var hasFocusedOnce = false
+    @State private var selectedMessageIndex: Int?
+    @State private var showAttachSheet = false
+    @State private var showPhotoPicker = false
+    @State private var showCamera = false
+    @State private var showFilePicker = false
+    @State private var photoSelections: [PhotosPickerItem] = []
+    @State private var isSending = false
+    @State private var toastMessage: String?
+    @State private var showToast = false
+    @FocusState private var isInputFocused: Bool
+
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                if sdk.chat.messages.isEmpty && !sdk.chat.isTyping {
+                    emptyState
+                } else {
+                    messagesArea
+                }
+                inputBar
+            }
+
+            if showToast, let message = toastMessage {
+                VStack {
+                    Spacer()
+                    Text(message)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundColor(Origon.toastForeground)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Origon.toastBackground)
+                        .cornerRadius(8)
+                        .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                        .padding(.horizontal, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.bottom, 96)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                .zIndex(1)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showToast)
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: onMenuTap) {
+                    Image("HistoryIcon")
+                        .renderingMode(.template)
+                        .foregroundColor(Origon.textPrimary)
+                }
+                .accessibilityLabel("Session history")
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: onNewSession) {
+                    Image(systemName: "plus")
+                        .font(.body.weight(.semibold))
+                        .foregroundColor(Origon.textPrimary)
+                }
+                .accessibilityLabel("New session")
+            }
+        }
+        .onAppear {
+            startSessionIfNeeded()
+        }
+        .onChange(of: sessionId) { _ in
+            hasStartedSession = false
+            hasFocusedOnce = false
+            startSessionIfNeeded()
+        }
+        .onChange(of: sdk.chat.currentSessionId) { _ in
+            guard !hasFocusedOnce else { return }
+            hasFocusedOnce = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                isInputFocused = true
+            }
+        }
+        .onChange(of: sdk.chat.error) { newValue in
+            guard let message = newValue, !message.isEmpty else { return }
+            presentToast(message)
+            sdk.chat.error = nil
+        }
+        .confirmationDialog("Add attachment", isPresented: $showAttachSheet, titleVisibility: .hidden) {
+            Button("Photo Library") {
+                showPhotoPicker = true
+            }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Camera") {
+                    showCamera = true
+                }
+            }
+            Button("Files") {
+                showFilePicker = true
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $photoSelections,
+            maxSelectionCount: nil,
+            matching: .any(of: [.images, .videos])
+        )
+        .onChange(of: photoSelections) { items in
+            guard !items.isEmpty else { return }
+            handlePhotoSelections(items)
+            photoSelections = []
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPickerView(
+                onImageCaptured: { image in
+                    handleCapturedImage(image)
+                    showCamera = false
+                },
+                onCancel: { showCamera = false }
+            )
+            .ignoresSafeArea()
+        }
+        .fileImporter(
+            isPresented: $showFilePicker,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            handleFileImport(result)
+        }
+    }
+
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            Image("OrigonLogo")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 56, height: 56)
+            Text("How can I help you?")
+                .font(.title2.weight(.medium))
+                .foregroundColor(Origon.textPrimary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .onTapGesture { isInputFocused = false }
+    }
+
+    // MARK: - Sub-views
+
+    private var messagesArea: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(Array(sdk.chat.messages.enumerated()), id: \.offset) { index, message in
+                        MessageBubble(message: message, selectedIndex: $selectedMessageIndex, index: index)
+                            .id(index)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                    }
+
+                    if sdk.chat.isTyping {
+                        TypingIndicator()
+                            .id("typing")
+                            .transition(.opacity)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .onChange(of: sdk.chat.messages.count) { _ in
+                withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy: proxy) }
+            }
+            .onChange(of: sdk.chat.isTyping) { _ in
+                withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy: proxy) }
+            }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    scrollToBottom(proxy: proxy)
+                }
+            }
+        }
+        .onTapGesture { isInputFocused = false }
+    }
+
+    private var hasText: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasContent: Bool {
+        hasText || !sdk.chat.pendingAttachments.isEmpty
+    }
+
+    // MARK: - Input bar
+
+    private var inputBar: some View {
+        VStack(spacing: 0) {
+            if !sdk.chat.pendingAttachments.isEmpty {
+                attachmentsPreviewRow
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                attachButton
+
+                TextField("Type a message", text: $inputText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .lineLimit(1...5)
+                    .focused($isInputFocused)
+                    .padding(.vertical, 8)
+                    .onChange(of: inputText) { newValue in
+                        if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            sdk.chat.stopTyping()
+                        } else {
+                            sdk.chat.notifyTyping()
+                        }
+                    }
+
+                sendOrWaveButton
+                    .padding(.trailing, 2)
+                    .padding(.bottom, 3)
+            }
+            .padding(.leading, 4)
+            .padding(.trailing, 4)
+            .padding(.vertical, 4)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasContent)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: sdk.chat.pendingAttachments)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(Origon.border, lineWidth: 1)
+                .background(RoundedRectangle(cornerRadius: 24).fill(Origon.screenBackground))
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+    }
+
+    private var attachButton: some View {
+        Button {
+            isInputFocused = false
+            showAttachSheet = true
+        } label: {
+            Image(systemName: "paperclip")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundColor(Origon.textSecondary)
+                .frame(width: 32, height: 32)
+        }
+        .padding(.leading, 2)
+        .padding(.bottom, 3)
+        .disabled(isSending)
+    }
+
+    private var sendOrWaveButton: some View {
+        Button {
+            if hasContent {
+                sendMessage()
+            } else {
+                isInputFocused = false
+                onStartCall()
+            }
+        } label: {
+            ZStack {
+                if isSending {
+                    Circle()
+                        .fill(Origon.accent.opacity(0.3))
+                        .frame(width: 32, height: 32)
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(0.8)
+                } else {
+                    Circle()
+                        .fill(Origon.accent)
+                        .frame(width: 32, height: 32)
+                    Image(hasContent ? "SendIcon" : "VoiceIcon")
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                        .foregroundColor(.white)
+                        .id(hasContent)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+        }
+        .disabled(isSending)
+    }
+
+    private var attachmentsPreviewRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(sdk.chat.pendingAttachments) { attachment in
+                    AttachmentTile(attachment: attachment) {
+                        sdk.chat.removePendingAttachment(id: attachment.id)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+        }
+    }
+
+    // MARK: - Behavior
+
+    private func scrollToBottom(proxy: ScrollViewProxy) {
+        if sdk.chat.isTyping {
+            proxy.scrollTo("typing", anchor: .bottom)
+        } else if !sdk.chat.messages.isEmpty {
+            proxy.scrollTo(sdk.chat.messages.count - 1, anchor: .bottom)
+        }
+    }
+
+    private func sendMessage() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !sdk.chat.pendingAttachments.isEmpty else { return }
+
+        Task {
+            if sdk.chat.hasUploadingAttachments {
+                await MainActor.run { isSending = true }
+                await waitForUploads()
+                await MainActor.run { isSending = false }
+            }
+            await MainActor.run { inputText = "" }
+            await sdk.chat.sendMessage(text: text)
+        }
+    }
+
+    private func waitForUploads() async {
+        while sdk.chat.hasUploadingAttachments {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    private func startSessionIfNeeded() {
+        guard !hasStartedSession else { return }
+        hasStartedSession = true
+        Task { await sdk.chat.openSession(id: sessionId) }
+    }
+
+    private func presentToast(_ message: String) {
+        toastMessage = message
+        withAnimation { showToast = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            withAnimation { showToast = false }
+        }
+    }
+
+    // MARK: - Pickers
+
+    private func handlePhotoSelections(_ items: [PhotosPickerItem]) {
+        for item in items {
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                let (fileName, contentType) = inferFileInfo(from: item, data: data)
+                let preview: UIImage? = contentType.hasPrefix("image/")
+                    ? UIImage(data: data)
+                    : nil
+                await MainActor.run {
+                    sdk.chat.uploadFile(
+                        data: data,
+                        fileName: fileName,
+                        contentType: contentType,
+                        previewImage: preview
+                    )
+                }
+            }
+        }
+    }
+
+    private func handleCapturedImage(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        let fileName = "IMG-\(Int(Date().timeIntervalSince1970)).jpg"
+        sdk.chat.uploadFile(
+            data: data,
+            fileName: fileName,
+            contentType: "image/jpeg",
+            previewImage: image
+        )
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let fileName = url.lastPathComponent
+            let contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            let preview: UIImage? = contentType.hasPrefix("image/")
+                ? UIImage(data: data)
+                : nil
+            sdk.chat.uploadFile(
+                data: data,
+                fileName: fileName,
+                contentType: contentType,
+                previewImage: preview
+            )
+        }
+    }
+
+    private func inferFileInfo(from item: PhotosPickerItem, data: Data) -> (String, String) {
+        let suggestedName = item.itemIdentifier ?? UUID().uuidString
+        if let utType = item.supportedContentTypes.first {
+            let ext = utType.preferredFilenameExtension ?? "dat"
+            let mime = utType.preferredMIMEType ?? "application/octet-stream"
+            return ("\(suggestedName).\(ext)", mime)
+        }
+        return ("\(suggestedName).jpg", "image/jpeg")
+    }
+}
+
+// MARK: - Attachment tile
+
+private struct AttachmentTile: View {
+    let attachment: PendingAttachment
+    let onRemove: () -> Void
+
+    private var overlayColor: Color {
+        switch attachment.status {
+        case .uploading: return Color.black.opacity(0.35)
+        case .error: return Color.red.opacity(0.8)
+        case .completed: return .clear
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                if let image = attachment.previewImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 80, height: 80)
+                        .clipped()
+                } else {
+                    VStack(spacing: 4) {
+                        Image(systemName: iconName(for: attachment.contentType))
+                            .font(.system(size: 22))
+                            .foregroundColor(Origon.textSecondary)
+                        Text(attachment.fileName)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundColor(Origon.textSecondary)
+                            .padding(.horizontal, 4)
+                    }
+                    .frame(width: 80, height: 80)
+                    .background(Origon.remoteBubble)
+                    .overlay(alignment: .bottomTrailing) {
+                        if !attachment.fileExtension.isEmpty {
+                            Text(attachment.fileExtension)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(Origon.textSecondary)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(Origon.border.opacity(0.6))
+                                .cornerRadius(3)
+                                .padding(4)
+                        }
+                    }
+                }
+
+                if attachment.status == .uploading {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Color.black.opacity(0.25)
+                            Color.black.opacity(0.5)
+                                .frame(width: geo.size.width * CGFloat(attachment.progress / 100))
+                        }
+                    }
+                } else if attachment.status == .error {
+                    Color.red.opacity(0.75)
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white)
+                }
+            }
+            .frame(width: 80, height: 80)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Origon.border, lineWidth: 0.5)
+            )
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Color.red)
+                    .clipShape(Circle())
+            }
+            .padding(4)
+            .accessibilityLabel("Remove attachment")
+        }
+        .frame(width: 80, height: 80)
+    }
+
+    private func iconName(for contentType: String) -> String {
+        let t = contentType.lowercased()
+        switch true {
+        case t == "application/pdf": return "doc.richtext"
+        case t.hasPrefix("audio/"): return "waveform"
+        case t.hasPrefix("video/"): return "play.rectangle"
+        case t.contains("zip"): return "doc.zipper"
+        case t.contains("word") || t.contains("document"): return "doc.text"
+        case t.contains("sheet") || t.contains("excel"): return "tablecells"
+        default: return "doc"
+        }
+    }
+}
