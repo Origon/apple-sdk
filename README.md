@@ -33,6 +33,38 @@ Then add `OrigonSDK` to your target's dependencies:
 The pre-built `COrigonSDK` XCFramework is downloaded automatically by SPM
 from [GitHub Releases](https://github.com/Origon/apple-sdk/releases).
 
+## Host App Configuration
+
+iOS reads permission and capability declarations only from the **main
+bundle's** `Info.plist` — keys placed inside an embedded framework are
+ignored at runtime. The following entries must be added by the
+integrating app.
+
+### Required: microphone permission
+
+Voice sessions request audio recording via `AVAudioSession`. Without
+this key the app crashes the first time a call starts.
+
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>Microphone access is required for voice calls.</string>
+```
+
+### Optional: background voice calls
+
+If calls must continue while the app is backgrounded (e.g. the user
+locks the screen mid-call), declare the `audio` background mode:
+
+```xml
+<key>UIBackgroundModes</key>
+<array>
+    <string>audio</string>
+</array>
+```
+
+If you integrate with CallKit / PushKit for system call UI, also add
+`voip` to the same array.
+
 ## Quick Start
 
 ```swift
