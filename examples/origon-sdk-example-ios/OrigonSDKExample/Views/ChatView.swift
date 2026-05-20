@@ -15,7 +15,6 @@ struct ChatView: View {
     @State private var hasStartedSession = false
     @State private var hasFocusedOnce = false
     @State private var selectedMessageIndex: Int?
-    @State private var showAttachSheet = false
     @State private var showPhotoPicker = false
     @State private var showCamera = false
     @State private var showFilePicker = false
@@ -96,20 +95,6 @@ struct ChatView: View {
             guard let message = newValue, !message.isEmpty else { return }
             presentToast(message)
             sdk.chat.error = nil
-        }
-        .confirmationDialog("Add attachment", isPresented: $showAttachSheet, titleVisibility: .hidden) {
-            Button("Photo Library") {
-                showPhotoPicker = true
-            }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                Button("Camera") {
-                    showCamera = true
-                }
-            }
-            Button("Files") {
-                showFilePicker = true
-            }
-            Button("Cancel", role: .cancel) { }
         }
         .photosPicker(
             isPresented: $showPhotoPicker,
@@ -254,9 +239,24 @@ struct ChatView: View {
     }
 
     private var attachButton: some View {
-        Button {
-            isInputFocused = false
-            showAttachSheet = true
+        Menu {
+            Button {
+                showPhotoPicker = true
+            } label: {
+                Label("Photo Library", systemImage: "photo.on.rectangle")
+            }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button {
+                    showCamera = true
+                } label: {
+                    Label("Camera", systemImage: "camera")
+                }
+            }
+            Button {
+                showFilePicker = true
+            } label: {
+                Label("Files", systemImage: "folder")
+            }
         } label: {
             Image(systemName: "paperclip")
                 .font(.system(size: 18, weight: .regular))
@@ -266,6 +266,7 @@ struct ChatView: View {
         .padding(.leading, 2)
         .padding(.bottom, 3)
         .disabled(isSending)
+        .simultaneousGesture(TapGesture().onEnded { isInputFocused = false })
     }
 
     private var sendOrWaveButton: some View {

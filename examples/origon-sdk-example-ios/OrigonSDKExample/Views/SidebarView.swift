@@ -87,14 +87,12 @@ struct SidebarView: View {
                 Label("Change Endpoint", systemImage: "rectangle.portrait.and.arrow.right")
             }
         } label: {
-            HStack(spacing: 12) {
+            HStack {
                 Image(systemName: "ellipsis.circle")
-                    .font(.body)
-                Text("Options")
-                    .font(.body.weight(.medium))
+                    .font(.system(size: 24))
+                    .foregroundColor(Origon.textPrimary.opacity(0.6))
                 Spacer()
             }
-            .foregroundColor(Origon.textPrimary)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .contentShape(Rectangle())

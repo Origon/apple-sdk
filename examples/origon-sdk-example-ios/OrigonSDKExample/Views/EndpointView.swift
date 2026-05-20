@@ -25,38 +25,50 @@ struct EndpointView: View {
 
     var body: some View {
         ZStack {
-            // Underlay — header pinned to the top
-            headerSection
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Inner stack — header + form. Ignores keyboard so the form's
+            // bottom-alignment is driven by the explicit `keyboardHeight`
+            // spacer rather than SwiftUI's auto-avoidance.
+            ZStack {
+                headerSection
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            // Overlay — endpoint form bottom-aligned
-            VStack(spacing: 0) {
-                VStack(spacing: 24) {
-                    OrigonInput(
-                        placeholder: "Enter endpoint URL",
-                        text: $endpointURL,
-                        errorMessage: endpointError,
-                        keyboardType: .URL,
-                        focus: $endpointFocused
-                    )
-                    .onChange(of: endpointURL) { _ in
-                        if endpointError != nil { endpointError = nil }
-                    }
+                VStack(spacing: 0) {
+                    VStack(spacing: 24) {
+                        OrigonInput(
+                            placeholder: "Enter endpoint URL",
+                            text: $endpointURL,
+                            errorMessage: endpointError,
+                            keyboardType: .URL,
+                            focus: $endpointFocused
+                        )
+                        .onChange(of: endpointURL) { _ in
+                            if endpointError != nil { endpointError = nil }
+                        }
 
-                    InvertedButton(
-                        title: "Continue",
-                        loading: isLoading
-                    ) {
-                        handleEndpointLogin()
+                        InvertedButton(
+                            title: "Continue",
+                            loading: isLoading
+                        ) {
+                            handleEndpointLogin()
+                        }
                     }
+                    .padding(.horizontal, 24)
+
+                    Color.clear.frame(height: isKeyboardVisible ? keyboardHeight : 24)
                 }
-                .padding(.horizontal, 24)
-
-                Color.clear.frame(height: isKeyboardVisible ? keyboardHeight : 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .ignoresSafeArea(edges: .top)
+            .ignoresSafeArea(.keyboard)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notif in
+                applyKeyboardChange(notif, height: keyboardFrame(from: notif).height)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notif in
+                applyKeyboardChange(notif, height: 0)
+            }
 
-            // Floating toast.
+            // Toast lives in the outer ZStack so it inherits SwiftUI's
+            // keyboard avoidance — sits above the keyboard, not under it.
             if showToast, let message = toastMessage {
                 VStack {
                     Spacer()
@@ -77,14 +89,6 @@ struct EndpointView: View {
                 .zIndex(1)
                 .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showToast)
             }
-        }
-        .ignoresSafeArea(edges: .top)
-        .ignoresSafeArea(.keyboard)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notif in
-            applyKeyboardChange(notif, height: keyboardFrame(from: notif).height)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notif in
-            applyKeyboardChange(notif, height: 0)
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
