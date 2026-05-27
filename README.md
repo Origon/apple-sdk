@@ -105,8 +105,6 @@ while true {
 
 ```swift
 try client.setMute(id: response.sessionId, muted: true)
-let onHold = try client.toggleHold(id: response.sessionId)
-try client.sendDtmf(id: response.sessionId, digit: "5", durationMs: 100)
 ```
 
 ### Multiple sessions
@@ -182,8 +180,6 @@ while let event = client.pollEvent() {
 | `joinSession(_:)`                                                                                             | Attach to a previously-obtained `StartSessionResponse`.                           |
 | `endSession(_:)` / `endAllSessions()`                                                                         | Close a single / every session.                                                   |
 | `setMute(id:muted:)` / `setMuteAll(muted:)`                                                                   | Voice — absolute mute.                                                            |
-| `toggleHold(id:)`                                                                                             | Voice — toggle hold. Returns the new state.                                       |
-| `sendDtmf(id:digit:durationMs:)`                                                                              | Voice — send a DTMF digit per RFC 4733.                                           |
 | `sendMessage(id:payload:)`                                                                                    | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
 | `notifyTyping(id:)`                                                                                           | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs.              |
 | `stopTyping(id:)`                                                                                             | Chat — force outbound typing state to "off" immediately.                          |

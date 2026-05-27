@@ -304,32 +304,6 @@ public final class OrigonClient: @unchecked Sendable {
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
-    /// Returns the new hold state.
-    public func toggleHold(id: String) throws -> Bool {
-        guard let handle else { throw OrigonError.notInitialized }
-        var err = SessionError()
-        var state: Int32 = 0
-        let rc = id.withCString {
-            session_client_toggle_hold(handle, $0, &state, &err)
-        }
-        if rc != 0 { throw OrigonError.consume(&err) }
-        return state != 0
-    }
-
-    /// Send a DTMF digit. `digit` must be one of `0-9`, `*`, `#`,
-    /// `A-D` per RFC 4733.
-    public func sendDtmf(id: String, digit: Character, durationMs: UInt32) throws {
-        guard let handle else { throw OrigonError.notInitialized }
-        guard let ascii = digit.asciiValue else {
-            throw OrigonError(kind: .other, message: "DTMF digit must be ASCII")
-        }
-        var err = SessionError()
-        let rc = id.withCString {
-            session_client_send_dtmf(handle, $0, CChar(bitPattern: ascii), durationMs, &err)
-        }
-        if rc != 0 { throw OrigonError.consume(&err) }
-    }
-
     // MARK: - Chat
 
     /// Chat-only — send a text / HTML message on the named session.
