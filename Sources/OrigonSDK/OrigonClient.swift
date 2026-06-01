@@ -146,6 +146,19 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Session lifecycle
 
+    /// Open a session and return its ``StartSessionResponse``
+    /// `(sessionId, url, token)`.
+    ///
+    /// **Returning does not mean the media plane is connected.** For a
+    /// `.voice` session the MoQ dial runs in the background after this
+    /// returns: connect success arrives as a `.connected` event and a dial
+    /// failure as a `.disconnected` event (reason `.transportClosed`) on
+    /// the event stream — *not* as a thrown error. Calling
+    /// ``endSession(_:)`` with the returned id while still dialing cancels
+    /// the in-flight dial. A `.chat` session completes its (quick) SSE dial
+    /// before returning and still throws on SSE-dial failure. This call
+    /// throws only for the `/session/start` HTTP failure, a chat SSE-dial
+    /// failure, or a malformed request.
     public func startSession(_ options: StartSessionOptions) throws -> StartSessionResponse {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
@@ -180,6 +193,11 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Attach to a session whose ``StartSessionResponse`` was obtained
     /// out of band (multi-device handoff, deeplink, persisted session).
+    ///
+    /// Like ``startSession(_:)``, a `.voice` session dials MoQ in the
+    /// background — returning here does not mean it is connected; await the
+    /// `.connected` / `.disconnected` event. A `.chat` session completes
+    /// its SSE dial before returning.
     public func joinSession(_ input: JoinSessionInput) throws {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
