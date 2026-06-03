@@ -343,7 +343,8 @@ final class ChatService: ObservableObject {
             }
 
         case .sessionUpdated, .connected, .reconnecting, .reconnected,
-             .controlUpdated, .peerAttached, .peerDetached, .callError:
+             .controlUpdated, .peerAttached, .peerDetached, .callError,
+             .audioRouteChanged:
             break
         }
     }

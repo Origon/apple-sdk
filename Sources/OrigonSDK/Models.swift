@@ -39,6 +39,20 @@ public enum Platform: Sendable {
     case web
 }
 
+/// Audio output route override for a voice call — the "speakerphone" concept,
+/// distinct from device selection. On iOS this maps onto
+/// `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
+/// across reconnects and OS route changes. Raw values are ABI-stable across
+/// the native boundary (`default` is a Swift keyword, hence `automatic`).
+public enum AudioOutputRoute: Int32, Sendable {
+    /// System default — receiver/earpiece, or wired/Bluetooth when present.
+    case automatic = 0
+    /// Built-in loudspeaker (speakerphone).
+    case speaker = 1
+    /// Bluetooth hands-free. iOS resolves this via `automatic`.
+    case bluetooth = 2
+}
+
 // MARK: - Configuration / requests
 
 /// Configuration for creating an `OrigonClient`.
@@ -460,6 +474,10 @@ public enum ClientEvent: Sendable {
     /// Voice-side soft error. `message == nil` means a previously-
     /// surfaced error has cleared.
     case callError(sessionId: String, message: String?)
+    /// The audio output route changed — the app's `setAudioOutput` choice or
+    /// an OS-driven change (e.g. a headset plugged in mid-call). Drive a
+    /// speaker toggle from `route == .speaker`.
+    case audioRouteChanged(sessionId: String, route: AudioOutputRoute)
 
     public var sessionId: String {
         switch self {
@@ -474,7 +492,8 @@ public enum ClientEvent: Sendable {
              .peerAttached(let s, _, _),
              .peerDetached(let s, _, _),
              .disconnected(let s, _),
-             .callError(let s, _):
+             .callError(let s, _),
+             .audioRouteChanged(let s, _):
             return s
         }
     }

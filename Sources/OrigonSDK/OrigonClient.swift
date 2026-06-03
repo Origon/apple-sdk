@@ -322,6 +322,21 @@ public final class OrigonClient: @unchecked Sendable {
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
+    /// Override the audio output route (speaker / receiver / Bluetooth).
+    ///
+    /// Process-global — affects the app's single active voice session, so it
+    /// takes no session id. On iOS this maps to
+    /// `AVAudioSession.overrideOutputAudioPort`, and the SDK re-asserts the
+    /// route across reconnects and OS route changes. A no-op when no call is
+    /// active. Higher-level UI typically wraps this as a boolean speaker toggle
+    /// (`.speaker` / `.automatic`).
+    public func setAudioOutput(_ route: AudioOutputRoute) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = session_client_set_audio_output(handle, route.rawValue, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
     // MARK: - Chat
 
     /// Chat-only — send a text / HTML message on the named session.
@@ -679,6 +694,10 @@ public final class OrigonClient: @unchecked Sendable {
                 ? ev.call_error_message.map { String(cString: $0) }
                 : nil
             return .callError(sessionId: sid, message: msg)
+
+        case SESSION_EVENT_AUDIO_ROUTE_CHANGED:
+            let route = AudioOutputRoute(rawValue: ev.audio_route) ?? .automatic
+            return .audioRouteChanged(sessionId: sid, route: route)
 
         default:
             return nil

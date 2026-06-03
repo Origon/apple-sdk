@@ -95,6 +95,7 @@ while true {
     switch event {
     case .connected:                        print("connected")
     case .peerAttached(_, let peerId, _):   print("peer \(peerId)")
+    case .audioRouteChanged(_, let route):  speakerOn = route == .speaker
     case .disconnected(_, let reason):      print("disconnected: \(reason)"); return
     default: break
     }
@@ -104,8 +105,18 @@ while true {
 ### Voice controls
 
 ```swift
+// Mute (per session).
 try client.setMute(id: response.sessionId, muted: true)
+
+// Audio output route — process-global, so no session id. Maps onto
+// `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
+// across reconnects and OS route changes (headset plug/unplug). Resets to
+// `.automatic` on each new call.
+try client.setAudioOutput(.speaker)     // force the loudspeaker
+try client.setAudioOutput(.automatic)   // back to the default route (receiver / wired / Bluetooth)
 ```
+
+A speaker toggle is typically `client.setAudioOutput(on ? .speaker : .automatic)`.
 
 ### Multiple sessions
 
@@ -180,6 +191,7 @@ while let event = client.pollEvent() {
 | `joinSession(_:)`                                                                                             | Attach to a previously-obtained `StartSessionResponse`.                           |
 | `endSession(_:)` / `endAllSessions()`                                                                         | Close a single / every session.                                                   |
 | `setMute(id:muted:)` / `setMuteAll(muted:)`                                                                   | Voice — absolute mute.                                                            |
+| `setAudioOutput(_:)`                                                                                          | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
 | `sendMessage(id:payload:)`                                                                                    | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
 | `notifyTyping(id:)`                                                                                           | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs.              |
 | `stopTyping(id:)`                                                                                             | Chat — force outbound typing state to "off" immediately.                          |
@@ -199,6 +211,7 @@ while let event = client.pollEvent() {
 - `MessageStatus` — `.sending`, `.delivered`, `.failed`.
 - `MessageState` — `.streaming`, `.completed`.
 - `Platform` — `.mobile`, `.web`, `.none`.
+- `AudioOutputRoute` — `.automatic` (default route — receiver / wired / Bluetooth), `.speaker` (loudspeaker), `.bluetooth` (on iOS, resolved via `.automatic` — the active session already routes to a connected HFP device). Argument to `setAudioOutput(_:)`.
 - `StartSessionOptions` — channel, optional sessionId, optional `data` (raw JSON).
 - `StartSessionResponse` — sessionId, url, token.
 - `JoinSessionInput` — channel, sessionId, url, token.
@@ -206,7 +219,7 @@ while let event = client.pollEvent() {
 - `AttachmentRule` / `AttachmentPolicy` — tenant policy for attachments.
 - `ServerConfig` — full `/config` snapshot.
 - `DisconnectReason` — structured disconnect reasons (incl. `.serverClosed(code:detail:)`).
-- `ClientEvent` — `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`.
+- `ClientEvent` — `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`.
 - `Message` — typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`.
 - `Attachment`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
 - `SendMessagePayload` — `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`).

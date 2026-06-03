@@ -21,6 +21,7 @@ struct CallView: View {
     // Resting → animated targets for the call-control buttons. Driven once
     // when entering `connected`, with the same staggered delays as the web.
     @State private var animateMuteButton = false
+    @State private var animateSpeakerButton = false
     @State private var animateEndButton = false
 
     // Approximation of the web's `linear(...)` keyframe easing for `animate-*`
@@ -101,8 +102,9 @@ struct CallView: View {
             }
 
             // Bottom controls.
-            HStack(spacing: 40) {
+            HStack(spacing: 32) {
                 muteButton
+                speakerButton
                 endCallButton
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -186,6 +188,30 @@ struct CallView: View {
         .accessibilityLabel(sdk.call.muted ? "Unmute" : "Mute")
     }
 
+    private var speakerButton: some View {
+        Button {
+            let next = !sdk.call.speakerOn
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                sdk.call.setSpeaker(next)
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(sdk.call.speakerOn ? Origon.accent : Origon.textPrimary.opacity(0.2))
+                Image(systemName: sdk.call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 22, height: 22)
+                    .foregroundColor(sdk.call.speakerOn ? .white : Origon.textPrimary.opacity(0.7))
+            }
+            .frame(width: 48, height: 48)
+            .scaleEffect(animateSpeakerButton ? 1.12 : 1.0)
+            .opacity(animateSpeakerButton ? 1.0 : 0.5)
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityLabel(sdk.call.speakerOn ? "Turn off speaker" : "Turn on speaker")
+    }
+
     private var endCallButton: some View {
         Button {
             sdk.call.endCall()
@@ -217,6 +243,9 @@ struct CallView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 withAnimation(Self.bounceSpring) { animateMuteButton = true }
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.225) {
+                withAnimation(Self.bounceSpring) { animateSpeakerButton = true }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(Self.bounceSpring) { animateEndButton = true }
             }
@@ -235,6 +264,7 @@ struct CallView: View {
 
         case .idle, .connecting:
             animateMuteButton = false
+            animateSpeakerButton = false
             animateEndButton = false
             cancelCallTimer()
         }

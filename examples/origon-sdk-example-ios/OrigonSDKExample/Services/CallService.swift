@@ -20,6 +20,10 @@ final class CallService: ObservableObject {
 
     @Published var phase: Phase = .idle
     @Published var muted = false
+    /// Whether call audio is routed to the loudspeaker. Driven by the SDK's
+    /// `ClientEvent.audioRouteChanged` (our own `setSpeaker` and OS-driven route
+    /// changes alike), so it never goes stale. Reset to `false` on each new call.
+    @Published var speakerOn = false
     /// Soft errors surfaced via `ClientEvent.callError` while a call is
     /// up. `nil` = no error / cleared.
     @Published var lastError: String?
@@ -52,6 +56,7 @@ final class CallService: ObservableObject {
         phase = .connecting
         lastError = nil
         muted = false
+        speakerOn = false
         do {
             // `startSession` blocks on the FFI runtime (HTTP + QUIC dial).
             // Hop off the main actor so SwiftUI commits the `.connecting`
@@ -86,6 +91,24 @@ final class CallService: ObservableObject {
             muted = value
         } catch let e as OrigonError {
             lastError = e.message ?? "Failed to update mute"
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Route call audio to the loudspeaker (`true`) or back to the default
+    /// route — receiver / headset / Bluetooth (`false`). Process-global, so it
+    /// needs no session id. Updates `speakerOn` optimistically for the explicit
+    /// toggle; OS-driven changes (e.g. a headset plugged in) arrive separately
+    /// via `audioRouteChanged`. Surfaces failure via `lastError` rather than
+    /// throwing — a routing toggle shouldn't block a live call.
+    func setSpeaker(_ on: Bool) {
+        guard let client = sdk?.client else { return }
+        do {
+            try client.setAudioOutput(on ? .speaker : .automatic)
+            speakerOn = on
+        } catch let e as OrigonError {
+            lastError = e.message ?? "Failed to switch speaker"
         } catch {
             lastError = error.localizedDescription
         }
@@ -128,6 +151,12 @@ final class CallService: ObservableObject {
         case .callError(_, let message):
             // Soft error — surface but don't tear the call down.
             lastError = message
+
+        case .audioRouteChanged(_, let route):
+            // SDK is the source of truth for the route: fires for our own
+            // setSpeaker and for OS-driven changes (headset plug), so the
+            // toggle never goes stale.
+            speakerOn = route == .speaker
 
         // Voice-irrelevant events on a voice session — ignore. Chat
         // plane events (`messageAdded` / `messageUpdated`) are owned by
