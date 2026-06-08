@@ -25,14 +25,35 @@ struct EndpointView: View {
 
     var body: some View {
         ZStack {
-            // Inner stack — header + form. Ignores keyboard so the form's
-            // bottom-alignment is driven by the explicit `keyboardHeight`
-            // spacer rather than SwiftUI's auto-avoidance.
             ZStack {
-                headerSection
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                if colorScheme == .dark {
+                    Image("LoginArtwork")
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 420)
+                        .clipped()
+                        .mask(
+                            LinearGradient(
+                                gradient: Gradient(stops: [
+                                    .init(color: .black, location: 0.0),
+                                    .init(color: .black, location: 0.55),
+                                    .init(color: .clear, location: 1.0)
+                                ]),
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .ignoresSafeArea(edges: .top)
+                }
 
+                // Header + form in one VStack; header expands to vertically
+                // center its content between the status bar and the form.
                 VStack(spacing: 0) {
+                    headerSection
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
                     VStack(spacing: 24) {
                         OrigonInput(
                             placeholder: "Enter endpoint URL",
@@ -56,9 +77,8 @@ struct EndpointView: View {
 
                     Color.clear.frame(height: isKeyboardVisible ? keyboardHeight : 24)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .ignoresSafeArea(edges: .top)
             .ignoresSafeArea(.keyboard)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notif in
                 applyKeyboardChange(notif, height: keyboardFrame(from: notif).height)
@@ -108,40 +128,27 @@ struct EndpointView: View {
     // MARK: - Header Section
 
     private var headerSection: some View {
-        ZStack {
-            if colorScheme == .dark {
-                Image("LoginArtwork")
+        VStack(spacing: 12) {
+            if colorScheme == .light {
+                Image("OrigonLogo")
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 48)
+                    .padding(.bottom, 12)
             }
 
-            VStack(spacing: 12) {
-                if colorScheme == .light {
-                    Image("OrigonLogo")
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(height: 48)
-                        .padding(.top, 72)
-                        .padding(.bottom, 12)
-                }
+            Text("Let’s Get Started")
+                .font(.title.weight(.medium))
+                .foregroundColor(Origon.textPrimary)
+                .multilineTextAlignment(.center)
 
-                Text("Let’s Get Started")
-                    .font(.title.weight(.medium))
-                    .foregroundColor(Origon.textPrimary)
-                    .multilineTextAlignment(.center)
-
-                Text("Connect to an Origon endpoint to start chatting and calling.")
-                    .font(.body)
-                    .foregroundColor(Origon.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 8)
-            }
-            .padding(.horizontal, 32)
+            Text("Connect to an Origon endpoint to start chatting and calling.")
+                .font(.body)
+                .foregroundColor(Origon.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 320)
+        .padding(.horizontal, 32)
     }
 
     // MARK: - Keyboard sync

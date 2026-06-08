@@ -28,8 +28,10 @@ struct MessageBubble: View {
                         .foregroundColor(isSelfUser ? .white : Origon.textPrimary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(isSelfUser ? Origon.accent : Origon.remoteBubble)
-                        .cornerRadius(18)
+                        .background(
+                            BubbleShape()
+                                .fill(isSelfUser ? Origon.accent : Origon.remoteBubble)
+                        )
                 }
 
                 if !message.attachments.isEmpty {
@@ -177,5 +179,12 @@ private struct AttachmentRow: View {
     private func download() {
         guard let url = URL(string: attachment.url) else { return }
         UIApplication.shared.open(url)
+    }
+}
+
+private struct BubbleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = min(rect.height / 2, 22)
+        return RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: rect)
     }
 }

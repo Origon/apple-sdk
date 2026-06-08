@@ -4,7 +4,7 @@ import SwiftUI
 // Visual states: loading → connected (with delayed Start Talking) → error.
 // The `connected` entry choreographs: backdrop "grow", inner scale ring with a
 // continuous slow rotation, the gradient logo "appearing" from blur, and the
-// mute/end buttons easing from a dim resting state to full opacity.
+// mute/speaker/end buttons easing from a dim resting state to full opacity.
 // Audio-level reactive scaling (web) is intentionally omitted for now.
 
 struct CallView: View {
@@ -19,7 +19,8 @@ struct CallView: View {
     @State private var callTimerTask: Task<Void, Never>?
 
     // Resting → animated targets for the call-control buttons. Driven once
-    // when entering `connected`, with the same staggered delays as the web.
+    // when entering `connected`, staggered mute → speaker → end so the three
+    // reveal in sequence.
     @State private var animateMuteButton = false
     @State private var animateSpeakerButton = false
     @State private var animateEndButton = false
@@ -190,18 +191,20 @@ struct CallView: View {
 
     private var speakerButton: some View {
         Button {
-            let next = !sdk.call.speakerOn
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                sdk.call.setSpeaker(next)
-            }
+            sdk.call.setSpeaker(!sdk.call.speakerOn)
         } label: {
             ZStack {
                 Circle()
                     .fill(sdk.call.speakerOn ? Origon.accent : Origon.textPrimary.opacity(0.2))
+                // Sized via font, not `.resizable()`: the two symbols
+                // (`speaker.fill` vs `speaker.wave.2.fill`) have different
+                // intrinsic aspect ratios, so a resizable+`.fit` glyph visibly
+                // stretches when the symbol swaps mid-press (the resize gets
+                // caught in the press-scale transaction). Font sizing keeps the
+                // glyph stable across the toggle.
                 Image(systemName: sdk.call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
+                    .font(.system(size: 22))
+                    .frame(width: 24, height: 24)
                     .foregroundColor(sdk.call.speakerOn ? .white : Origon.textPrimary.opacity(0.7))
             }
             .frame(width: 48, height: 48)
@@ -243,10 +246,10 @@ struct CallView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 withAnimation(Self.bounceSpring) { animateMuteButton = true }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.225) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation(Self.bounceSpring) { animateSpeakerButton = true }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 withAnimation(Self.bounceSpring) { animateEndButton = true }
             }
             startCallTimer()

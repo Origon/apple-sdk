@@ -14,14 +14,37 @@ struct AttachmentsPreview: View {
 
     @State private var currentIndex: Int = 0
 
+    // Photos-style interactive dismiss + chrome toggle state.
+    @State private var dragOffset: CGSize = .zero
+    @State private var chromeVisible = false
+
+    // How far (points) a vertical drag travels before the background fully fades.
+    private let dismissTravel: CGFloat = 250
+
+    // 0 → at rest, 1 → fully dragged. Drives background fade + content scale.
+    private var dragProgress: Double {
+        Double(min(1, abs(dragOffset.height) / dismissTravel))
+    }
+
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .opacity(1 - dragProgress * 0.7)
+                .ignoresSafeArea()
 
             if attachments.indices.contains(currentIndex) {
                 content(for: attachments[currentIndex])
                     .id(currentIndex)
+                    .scaleEffect(CGFloat(1 - dragProgress * 0.18))
+                    .offset(dragOffset)
                     .transition(.opacity)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            chromeVisible.toggle()
+                        }
+                    }
+                    .simultaneousGesture(dismissGesture)
             }
 
             VStack {
@@ -32,9 +55,33 @@ struct AttachmentsPreview: View {
                         .padding(.bottom, 24)
                 }
             }
+            .opacity(chromeVisible ? 1 : 0)
+            .allowsHitTesting(chromeVisible)
+            .animation(.easeInOut(duration: 0.25), value: chromeVisible)
         }
         .onAppear { currentIndex = activeIndex }
         .statusBar(hidden: true)
+    }
+
+    private var dismissGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                // Only treat predominantly vertical drags as a dismiss; this
+                // keeps horizontal interactions inside content untouched.
+                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                dragOffset = value.translation
+            }
+            .onEnded { value in
+                let dismiss = abs(value.translation.height) > 150
+                    || abs(value.predictedEndTranslation.height) > 450
+                if dismiss {
+                    isPresented = false
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.8)) {
+                        dragOffset = .zero
+                    }
+                }
+            }
     }
 
     private var header: some View {
