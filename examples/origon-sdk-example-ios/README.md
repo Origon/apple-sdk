@@ -13,17 +13,18 @@ voice calls. Two screens:
 
 - Xcode 15+
 - iOS 16+ target device or simulator
-- [xcodegen](https://github.com/yonki/XcodeGen) (`brew install xcodegen`)
 - A valid Apple Developer team for signing (configure once in Xcode)
 
 ## Getting started
 
+Open `OrigonSDKExample.xcodeproj` directly — no extra tooling required:
+
 ```bash
 cd apple-sdk/examples/origon-sdk-example-ios
-./run.sh
+open OrigonSDKExample.xcodeproj
 ```
 
-`run.sh` runs `xcodegen` and opens the generated project in Xcode. From there:
+From there:
 
 1. Select a development team under **Signing & Capabilities**.
 2. Pick a destination (simulator or device).
@@ -53,8 +54,7 @@ If you want to wire OrigonSDK into your own app, start with these files:
 ```
 origon-sdk-example-ios/
 ├── README.md
-├── run.sh
-├── project.yml          # xcodegen spec — produces OrigonSDKExample.xcodeproj
+├── OrigonSDKExample.xcodeproj   # open this directly
 └── OrigonSDKExample/
     ├── OrigonSDKExampleApp.swift
     ├── RootView.swift
@@ -73,12 +73,14 @@ The app requests:
 - **Microphone** — for voice calls
 - **Camera** — for attaching photos taken in-app
 
-Both usage descriptions are configured in `project.yml`. Photo library access
-goes through `PHPickerViewController` and does not require a usage string.
+Both usage descriptions are configured in the app target's Info settings.
+Photo library access goes through `PHPickerViewController` and does not require
+a usage string.
 
 ## SDK version
 
 The `OrigonSDK` Swift package is consumed via SPM from
-[github.com/Origon/apple-sdk](https://github.com/Origon/apple-sdk). The
-pinned version lives in `project.yml` under `packages.OrigonSDK.exactVersion`.
-Bump it when you want to test a newer SDK release.
+[github.com/Origon/apple-sdk](https://github.com/Origon/apple-sdk). The version
+rule is **Up to Next Minor Version** from `0.1.0-alpha.1`, so it tracks newer
+`0.1.x` releases automatically. To change it, select the project in Xcode →
+**Package Dependencies** → double-click the `apple-sdk` row and edit the rule.

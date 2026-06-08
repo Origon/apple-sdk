@@ -1,9 +1,12 @@
 # Xcode
-*.xcodeproj/
 xcuserdata/
 DerivedData/
 build/
-*.xcworkspace/
+
+# The example's Xcode project is committed so it can be opened and run without
+# xcodegen. Un-ignore it here (overrides the repo-root '*.xcodeproj/' rule) but
+# keep per-user state (xcuserdata/, handled above) out of version control.
+!OrigonSDKExample.xcodeproj
 
 # Swift Package Manager
 .build/
