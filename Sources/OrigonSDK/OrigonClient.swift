@@ -58,7 +58,6 @@ public final class OrigonClient: @unchecked Sendable {
                                     token: tokenPtr,
                                     user_id: userIdPtr,
                                     device_id: deviceIdPtr,
-                                    platform: config.platform.toC(),
                                     attributes_json: attrsPtr
                                 )
                                 return session_client_create(&cfg, &newHandle, &err)
@@ -821,15 +820,6 @@ extension SessionControl {
     }
 }
 
-extension Platform {
-    func toC() -> Int32 {
-        switch self {
-        case .none: return SESSION_PLATFORM_NONE
-        case .mobile: return SESSION_PLATFORM_MOBILE
-        case .web: return SESSION_PLATFORM_WEB
-        }
-    }
-}
 
 extension DisconnectReason {
     static func fromC(_ r: SessionDisconnectReason) -> DisconnectReason {

@@ -33,12 +33,6 @@ public enum MessageState: String, Codable, Sendable {
     case completed
 }
 
-public enum Platform: Sendable {
-    case none
-    case mobile
-    case web
-}
-
 /// Audio output route override for a voice call — the "speakerphone" concept,
 /// distinct from device selection. On iOS this maps onto
 /// `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
@@ -78,7 +72,6 @@ public struct ClientConfig: Sendable {
     /// users still get a stable identity. Initialization fails only if
     /// both this and the device identifier are unavailable.
     public let userId: String?
-    public let platform: Platform
     /// Initial session-level attributes. Injected as `data.attributes`
     /// on `POST /session/start`. Encoded to a JSON string via
     /// `JSONSerialization` before crossing the native boundary; pass
@@ -89,13 +82,11 @@ public struct ClientConfig: Sendable {
         endpoint: String,
         token: String? = nil,
         userId: String? = nil,
-        platform: Platform = .mobile,
         attributes: [String: Any]? = nil
     ) {
         self.endpoint = endpoint
         self.token = token
         self.userId = userId
-        self.platform = platform
         self.attributes = attributes
     }
 }

@@ -364,14 +364,13 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 
 | Type | Description |
 | --- | --- |
-| `ClientConfig` | endpoint, optional `token`, optional `userId`, platform, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted. |
+| `ClientConfig` | endpoint, optional `token`, optional `userId`, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted. |
 | `APNSEnvironment` | `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted. |
 | `Channel` | `.chat`, `.voice`. |
 | `SessionControl` | `.ai`, `.user`. |
 | `MessageRole` | `.ai`, `.external`, `.user`, `.system`. |
 | `MessageStatus` | `.sending`, `.delivered`, `.failed`. |
 | `MessageState` | `.streaming`, `.completed`. |
-| `Platform` | `.mobile`, `.web`, `.none`. |
 | `AudioOutputRoute` | `.automatic` (default route — receiver / wired / Bluetooth), `.speaker` (loudspeaker), `.bluetooth` (on iOS, resolved via `.automatic` — the active session already routes to a connected HFP device). Argument to `setAudioOutput(_:)`. |
 | `StartSessionOptions` | channel, optional sessionId, optional `data` (raw JSON). |
 | `StartSessionResponse` | sessionId, url, token. |

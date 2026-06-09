@@ -73,8 +73,7 @@ final class SDKManager: ObservableObject {
         let config = ClientConfig(
             endpoint: endpoint,
             token: token,
-            userId: userId,
-            platform: .mobile
+            userId: userId
         )
 
         // OrigonClient(config:) blocks on the FFI runtime — do it off the
