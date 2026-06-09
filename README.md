@@ -145,7 +145,7 @@ OrigonClient.initLogging()
 //    falls back to the device identifier so anonymous users still get a
 //    stable identity.
 let client = try OrigonClient(config: ClientConfig(
-    endpoint: "https://api.origon.ai",
+    endpoint: "https://origon.ai/chat/api/<id>",
     userId: "user-123"
 ))
 
