@@ -2,12 +2,47 @@
 
 iOS and macOS SDK for the Origon platform.
 
+## About
+
+The Origon SDK for Apple platforms lets you embed Origon directly in your
+iOS and macOS apps: **audio calls**, **chat** (with typing indicators,
+attachments, and message delivery status), **push notifications**, and
+**session history**.
+
+A basic chat + voice integration takes around 15 minutes; allow a little
+longer if you also wire up push notifications or background calls. The SDK
+authenticates your app by its **Bundle ID**, which you register once in the
+Origon Connect web app (see [Prerequisites](#prerequisites)). At runtime all
+you pass is your Origon **endpoint**.
+
 ## Requirements
 
 - iOS 15.0+
 - macOS 13.0+
 - Xcode 15+
 - Swift 5.9+
+
+## Prerequisites
+
+Register your app in the Origon Connect web app before the SDK can connect.
+The SDK authenticates each app by the **Bundle ID** it reports (sent as
+`X-Bundle-Id`), so that Bundle ID has to be on your tenant's allow-list
+first.
+
+1. Sign in to **Origon Connect** at <https://origon.ai/connect>.
+2. Go to **Settings → Integrations → Mobile → Setup Mobile SDK**.
+3. Fill in your app details — **Company Name**, **logo**, and the
+   **routing** rules for your flow (where calls and chats are sent).
+4. Open the **Deployment** tab and add your app's **Bundle ID** (e.g.
+   `com.domain.YourApp`) to the **Bundle IDs** field. It accepts multiple
+   entries, so you can register several apps (e.g. staging and production)
+   against the same config. To run and test the [sample app](#sample-app),
+   add its Bundle ID `origon.example.ios` here as well.
+5. **Save** the config.
+
+Your Bundle ID is the target's **Bundle Identifier** under Xcode's
+**General → Identity**; it must match exactly what the app reports at
+runtime.
 
 ## Installation
 
@@ -32,6 +67,17 @@ Then add `OrigonSDK` to your target's dependencies:
 
 The pre-built `COrigonSDK` XCFramework is downloaded automatically by SPM
 from [GitHub Releases](https://github.com/Origon/apple-sdk/releases).
+
+## Sample app
+
+You'll find the Origon SDK for Apple on GitHub
+[here](https://github.com/Origon/apple-sdk). The repo also includes a
+runnable sample app — a minimal iOS app that integrates chat and voice
+calls — under
+[`examples/origon-sdk-example-ios`](https://github.com/Origon/apple-sdk/tree/main/examples/origon-sdk-example-ios).
+See its [README](https://github.com/Origon/apple-sdk/blob/main/examples/origon-sdk-example-ios/README.md)
+for build and run instructions, plus a guide to which files to read first
+when wiring the SDK into your own app.
 
 ## Host App Configuration
 
@@ -96,7 +142,6 @@ OrigonClient.initLogging()
 //    stable identity.
 let client = try OrigonClient(config: ClientConfig(
     endpoint: "https://api.origon.ai",
-    token: "your-api-token",
     userId: "user-123"
 ))
 
@@ -199,6 +244,36 @@ while let event = client.pollEvent() {
 }
 ```
 
+### Attachments
+
+Chat only. Upload a file, then attach the returned `Attachment` to your
+next message. `uploadAttachment` is `async` with overloads for a
+filesystem path, `Data`, or a `URL` (the `url:` overload manages
+`startAccessingSecurityScopedResource()` for `UIDocumentPicker` URLs):
+
+```swift
+let attachment = try await client.uploadAttachment(
+    sessionId: sessionId,
+    url: pickedURL,
+    fileName: "photo.jpg"
+) { progress in
+    // progress.percent is nil when the total size is unknown
+    updateProgressBar(progress.percent)
+}
+
+try client.sendMessage(
+    id: sessionId,
+    payload: SendMessagePayload(attachments: [attachment])
+)
+
+// Cancel an in-flight upload (pass the uploadId) or delete a completed
+// one (pass attachment.id) — the SDK works out which.
+try await client.deleteAttachment(sessionId: sessionId, attachmentId: attachment.id)
+```
+
+Uploads are prechecked against the tenant's `attachmentPolicy` (type and
+size); a disallowed file throws `OrigonError` before any bytes are sent.
+
 ### Push notifications
 
 Register this device's APNs token so the backend can deliver push
@@ -258,30 +333,32 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 
 ### OrigonClient
 
-| Method                                                                                                        | Description                                                                       |
-| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `init(config:)`                                                                                               | Create a client. Throws `OrigonError` on connect failure.                         |
-| `pollEvent()`                                                                                                 | Non-blocking poll. Returns `nil` when idle.                                       |
-| `startSession(_:)`                                                                                            | Open a session. Returns `(sessionId, url, token)`.                                |
-| `joinSession(_:)`                                                                                             | Attach to a previously-obtained `StartSessionResponse`.                           |
-| `endSession(_:)` / `endAllSessions()`                                                                         | Close a single / every session.                                                   |
-| `setMute(id:muted:)` / `setMuteAll(muted:)`                                                                   | Voice — absolute mute.                                                            |
-| `setAudioOutput(_:)`                                                                                          | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
-| `sendMessage(id:payload:)`                                                                                    | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
-| `notifyTyping(id:)`                                                                                           | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs.              |
-| `stopTyping(id:)`                                                                                             | Chat — force outbound typing state to "off" immediately.                          |
-| `activeSessions()`                                                                                            | Snapshot of every active session.                                                 |
-| `getSessions()`                                                                                               | `GET /sessions` — list prior sessions for the configured `userId`.                |
-| `getSession(id:)`                                                                                             | `GET /session/<id>` — transcript for one session.                                 |
-| `setAttributes(_:)`                                                                                           | Replace session-level attributes injected as `data.attributes` on `startSession`. |
-| `OrigonClient.registerForPushNotifications(deviceToken:environment:)`                                         | Static. Register an APNs device token (buffered until init; auto-detects environment). |
-| `OrigonClient.unregisterForPushNotifications()`                                                               | Static. Remove this device's push registration (e.g. on logout).                 |
-| `startMessage` / `isChatEnabled` / `isCallEnabled` / `multipleChannels` / `attachmentPolicy` / `serverConfig` | Cached `/config` getters.                                                         |
-| `OrigonClient.initLogging(filter:)`                                                                           | Install Rust-side `tracing` subscriber.                                           |
+| Method | Description |
+| --- | --- |
+| `init(config:)` | Create a client. Throws `OrigonError` on connect failure. |
+| `pollEvent()` | Non-blocking poll. Returns `nil` when idle. |
+| `startSession(_:)` | Open a session. Returns `(sessionId, url, token)`. |
+| `joinSession(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
+| `endSession(_:)` / `endAllSessions()` | Close a single / every session. |
+| `setMute(id:muted:)` / `setMuteAll(muted:)` | Voice — absolute mute. |
+| `setAudioOutput(_:)` | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
+| `sendMessage(id:payload:)` | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
+| `notifyTyping(id:)` | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs. |
+| `stopTyping(id:)` | Chat — force outbound typing state to "off" immediately. |
+| `uploadAttachment(sessionId:…)` | Chat — `async`; upload a file (`path:` / `data:` / `url:` overloads) and return the server-issued `Attachment`. Reports progress via `onProgress`. |
+| `deleteAttachment(sessionId:attachmentId:)` | Chat — `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). |
+| `activeSessions()` | Snapshot of every active session. |
+| `getSessions()` | `GET /sessions` — list prior sessions for the configured `userId`. |
+| `getSession(id:)` | `GET /session/<id>` — transcript for one session. |
+| `setAttributes(_:)` | Replace session-level attributes injected as `data.attributes` on `startSession`. |
+| `OrigonClient.registerForPushNotifications(deviceToken:environment:)` | Static. Register an APNs device token (buffered until init; auto-detects environment). |
+| `OrigonClient.unregisterForPushNotifications()` | Static. Remove this device's push registration (e.g. on logout). |
+| `startMessage` / `isChatEnabled` / `isCallEnabled` / `multipleChannels` / `attachmentPolicy` / `serverConfig` | Cached `/config` getters. |
+| `OrigonClient.initLogging(filter:)` | Install Rust-side `tracing` subscriber. |
 
 ### Types
 
-- `ClientConfig` — endpoint, token, optional userId, platform, attributes (`[String: Any]?`). `userId` defaults to the device identifier (`identifierForVendor`) when omitted. The bundle identifier is resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call.
+- `ClientConfig` — endpoint, optional `token`, optional `userId`, platform, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted.
 - `APNSEnvironment` — `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted.
 - `Channel` — `.chat`, `.voice`.
 - `SessionControl` — `.ai`, `.user`.
@@ -299,13 +376,11 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 - `DisconnectReason` — structured disconnect reasons (incl. `.serverClosed(code:detail:)`).
 - `ClientEvent` — `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`.
 - `Message` — typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`.
-- `Attachment`, `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
+- `Attachment` — uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`.
+- `UploadProgress` — `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback.
+- `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
 - `SendMessagePayload` — `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`).
 - `OrigonError` — structured error with `kind`, `statusCode`, `code`, `message`.
-
-Attachment uploads (`upload_attachment` etc.) are not yet wired
-through the SDK; the `attachments` field on `SendMessagePayload` is
-reserved for that future surface.
 
 ## License
 
