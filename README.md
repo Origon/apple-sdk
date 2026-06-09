@@ -32,13 +32,17 @@ allow-list first.
 1. Sign in to **Origon Connect** at <https://origon.ai/connect>.
 2. Go to **Settings → Integrations → Mobile → Setup Mobile SDK**.
 3. Fill in your app details — **Company Name**, **logo**, and the
-   **routing** rules for your flow (where calls and chats are sent).
-4. Open the **Deployment** tab and add your app's **Bundle ID** (e.g.
+   **routing** rules for your flow (where calls and chats are sent). Press
+   **Next**.
+4. In the **Deployment** tab, add your app's **Bundle ID** (e.g.
    `com.domain.YourApp`) to the **Bundle IDs** field. It accepts multiple
    entries, so you can register several apps (e.g. staging and production)
    against the same config. To run and test the [sample app](#sample-app),
    add its Bundle ID `origon.example.ios` here as well.
-5. **Save** the config.
+5. Copy the **endpoint** shown in the **Deployment** tab and pass it as the
+   `endpoint` in `ClientConfig` when you initialize `OrigonClient` (see
+   [Quick Start](#quick-start)).
+6. **Save** the config.
 
 Your Bundle ID is the target's **Bundle Identifier** under Xcode's
 **General → Identity**; it must match exactly what the app reports at
@@ -358,29 +362,31 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 
 ### Types
 
-- `ClientConfig` — endpoint, optional `token`, optional `userId`, platform, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted.
-- `APNSEnvironment` — `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted.
-- `Channel` — `.chat`, `.voice`.
-- `SessionControl` — `.ai`, `.user`.
-- `MessageRole` — `.ai`, `.external`, `.user`, `.system`.
-- `MessageStatus` — `.sending`, `.delivered`, `.failed`.
-- `MessageState` — `.streaming`, `.completed`.
-- `Platform` — `.mobile`, `.web`, `.none`.
-- `AudioOutputRoute` — `.automatic` (default route — receiver / wired / Bluetooth), `.speaker` (loudspeaker), `.bluetooth` (on iOS, resolved via `.automatic` — the active session already routes to a connected HFP device). Argument to `setAudioOutput(_:)`.
-- `StartSessionOptions` — channel, optional sessionId, optional `data` (raw JSON).
-- `StartSessionResponse` — sessionId, url, token.
-- `JoinSessionInput` — channel, sessionId, url, token.
-- `ActiveSession` — sessionId, channel.
-- `AttachmentRule` / `AttachmentPolicy` — tenant policy for attachments.
-- `ServerConfig` — full `/config` snapshot.
-- `DisconnectReason` — structured disconnect reasons (incl. `.serverClosed(code:detail:)`).
-- `ClientEvent` — `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`.
-- `Message` — typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`.
-- `Attachment` — uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`.
-- `UploadProgress` — `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback.
-- `Contact`, `SessionSummary`, `SessionHistory` — typed shapes returned by `getSessions()` / `getSession(id:)`.
-- `SendMessagePayload` — `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`).
-- `OrigonError` — structured error with `kind`, `statusCode`, `code`, `message`.
+| Type | Description |
+| --- | --- |
+| `ClientConfig` | endpoint, optional `token`, optional `userId`, platform, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted. |
+| `APNSEnvironment` | `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted. |
+| `Channel` | `.chat`, `.voice`. |
+| `SessionControl` | `.ai`, `.user`. |
+| `MessageRole` | `.ai`, `.external`, `.user`, `.system`. |
+| `MessageStatus` | `.sending`, `.delivered`, `.failed`. |
+| `MessageState` | `.streaming`, `.completed`. |
+| `Platform` | `.mobile`, `.web`, `.none`. |
+| `AudioOutputRoute` | `.automatic` (default route — receiver / wired / Bluetooth), `.speaker` (loudspeaker), `.bluetooth` (on iOS, resolved via `.automatic` — the active session already routes to a connected HFP device). Argument to `setAudioOutput(_:)`. |
+| `StartSessionOptions` | channel, optional sessionId, optional `data` (raw JSON). |
+| `StartSessionResponse` | sessionId, url, token. |
+| `JoinSessionInput` | channel, sessionId, url, token. |
+| `ActiveSession` | sessionId, channel. |
+| `AttachmentRule` / `AttachmentPolicy` | tenant policy for attachments. |
+| `ServerConfig` | full `/config` snapshot. |
+| `DisconnectReason` | structured disconnect reasons (incl. `.serverClosed(code:detail:)`). |
+| `ClientEvent` | `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`. |
+| `Message` | typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`. |
+| `Attachment` | uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`. |
+| `UploadProgress` | `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback. |
+| `Contact`, `SessionSummary`, `SessionHistory` | typed shapes returned by `getSessions()` / `getSession(id:)`. |
+| `SendMessagePayload` | `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`). |
+| `OrigonError` | structured error with `kind`, `statusCode`, `code`, `message`. |
 
 ## License
 
