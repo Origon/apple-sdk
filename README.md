@@ -65,6 +65,24 @@ locks the screen mid-call), declare the `audio` background mode:
 If you integrate with CallKit / PushKit for system call UI, also add
 `voip` to the same array.
 
+### Optional: push notifications
+
+To receive push notifications, enable the **Push Notifications**
+capability on the app target (adds the `aps-environment` entitlement)
+and add the `remote-notification` background mode if you handle silent
+pushes:
+
+```xml
+<key>UIBackgroundModes</key>
+<array>
+    <string>remote-notification</string>
+</array>
+```
+
+The host app owns APNs registration (requesting authorization and
+calling `registerForRemoteNotifications()`); the SDK only needs the
+resulting device token. See [Push notifications](#push-notifications).
+
 ## Quick Start
 
 ```swift
@@ -73,7 +91,9 @@ import OrigonSDK
 // Optional: install Rust-side logging once at app launch.
 OrigonClient.initLogging()
 
-// 1. Create the client.
+// 1. Create the client. `userId` is optional — when omitted, the SDK
+//    falls back to the device identifier so anonymous users still get a
+//    stable identity.
 let client = try OrigonClient(config: ClientConfig(
     endpoint: "https://api.origon.ai",
     token: "your-api-token",
@@ -179,6 +199,61 @@ while let event = client.pollEvent() {
 }
 ```
 
+### Push notifications
+
+Register this device's APNs token so the backend can deliver push
+notifications. The host app owns token acquisition — request
+authorization and call `registerForRemoteNotifications()`, then forward
+the device token to the SDK from your `UIApplicationDelegate`:
+
+```swift
+import OrigonSDK
+import UserNotifications
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+                guard granted else { return }
+                DispatchQueue.main.async { application.registerForRemoteNotifications() }
+            }
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        // Forward the raw token — the SDK hex-encodes it for the wire.
+        OrigonClient.registerForPushNotifications(deviceToken: deviceToken)
+    }
+}
+
+// On logout:
+OrigonClient.unregisterForPushNotifications()
+```
+
+`registerForPushNotifications(deviceToken:environment:)` is a **static**
+method and is safe to call **before** the client is initialized — the
+token is buffered and sent automatically once `OrigonClient` is created.
+It is also safe to call repeatedly (e.g. on APNs token refresh); the
+latest token wins. The call returns immediately and runs the network
+request in the background; failures are logged, not thrown.
+
+**APNs environment.** A device token is bound to the environment of the
+build that produced it (development builds → sandbox; App Store /
+TestFlight → production), and the backend must target the matching APNs
+host. The SDK auto-detects this from the app's embedded provisioning
+profile, so you normally pass nothing. Override only if detection is
+wrong:
+
+```swift
+OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment: .sandbox)
+```
+
 ## API Reference
 
 ### OrigonClient
@@ -199,12 +274,15 @@ while let event = client.pollEvent() {
 | `getSessions()`                                                                                               | `GET /sessions` — list prior sessions for the configured `userId`.                |
 | `getSession(id:)`                                                                                             | `GET /session/<id>` — transcript for one session.                                 |
 | `setAttributes(_:)`                                                                                           | Replace session-level attributes injected as `data.attributes` on `startSession`. |
+| `OrigonClient.registerForPushNotifications(deviceToken:environment:)`                                         | Static. Register an APNs device token (buffered until init; auto-detects environment). |
+| `OrigonClient.unregisterForPushNotifications()`                                                               | Static. Remove this device's push registration (e.g. on logout).                 |
 | `startMessage` / `isChatEnabled` / `isCallEnabled` / `multipleChannels` / `attachmentPolicy` / `serverConfig` | Cached `/config` getters.                                                         |
 | `OrigonClient.initLogging(filter:)`                                                                           | Install Rust-side `tracing` subscriber.                                           |
 
 ### Types
 
-- `ClientConfig` — endpoint, token, userId, platform, attributes (`[String: Any]?`). The bundle identifier is resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call.
+- `ClientConfig` — endpoint, token, optional userId, platform, attributes (`[String: Any]?`). `userId` defaults to the device identifier (`identifierForVendor`) when omitted. The bundle identifier is resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call.
+- `APNSEnvironment` — `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted.
 - `Channel` — `.chat`, `.voice`.
 - `SessionControl` — `.ai`, `.user`.
 - `MessageRole` — `.ai`, `.external`, `.user`, `.system`.

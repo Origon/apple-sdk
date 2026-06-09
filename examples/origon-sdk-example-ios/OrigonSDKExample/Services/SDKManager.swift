@@ -1,6 +1,5 @@
 import Foundation
 import Combine
-import UIKit
 import OrigonSDK
 
 /// Owns the `OrigonClient` for the lifetime of an authenticated session and
@@ -69,12 +68,12 @@ final class SDKManager: ObservableObject {
         userId: String? = nil,
         token: String? = nil
     ) async throws {
-        let resolvedUserId: String? = userId ?? UIDevice.current.identifierForVendor?.uuidString
-
+        // `userId` is optional; when nil the SDK resolves a device
+        // identifier internally to use as the fallback.
         let config = ClientConfig(
             endpoint: endpoint,
             token: token,
-            userId: resolvedUserId,
+            userId: userId,
             platform: .mobile
         )
 

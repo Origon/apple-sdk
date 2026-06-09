@@ -53,12 +53,30 @@ public enum AudioOutputRoute: Int32, Sendable {
     case bluetooth = 2
 }
 
+/// APNs delivery environment for a device token.
+///
+/// A token is bound to the environment of the build that produced it —
+/// development builds yield `.sandbox` tokens, App Store / TestFlight
+/// builds yield `.production` tokens — and the backend must target the
+/// matching APNs host or APNs rejects the push with `BadDeviceToken`.
+/// `OrigonClient.registerForPushNotifications` auto-detects this from the
+/// app's embedded provisioning profile; pass an explicit value only to
+/// override that detection.
+public enum APNSEnvironment: String, Sendable {
+    case sandbox
+    case production
+}
+
 // MARK: - Configuration / requests
 
 /// Configuration for creating an `OrigonClient`.
 public struct ClientConfig: Sendable {
     public let endpoint: String
     public let token: String?
+    /// Optional. When omitted, the SDK falls back to the device
+    /// identifier (`UIDevice.current.identifierForVendor`) so anonymous
+    /// users still get a stable identity. Initialization fails only if
+    /// both this and the device identifier are unavailable.
     public let userId: String?
     public let platform: Platform
     /// Initial session-level attributes. Injected as `data.attributes`

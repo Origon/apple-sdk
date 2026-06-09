@@ -1,5 +1,8 @@
 import Foundation
 import COrigonSDK
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The primary interface to the Origon platform on Apple platforms.
 ///
@@ -30,20 +33,36 @@ public final class OrigonClient: @unchecked Sendable {
         var newHandle: OpaquePointer?
         let attributesJson = try Self.encodeAttributes(config.attributes)
         let bundleId = Bundle.main.bundleIdentifier
+        let deviceId = Self.resolveDeviceId()
+        // `userId` is optional at the SDK surface but required by the
+        // core. Fall back to the device id so anonymous users still get
+        // a stable identity. When the consumer omits `userId` and no
+        // device id is available, there is nothing to identify the user
+        // with — fail fast rather than send a blank id.
+        guard let effectiveUserId = config.userId ?? deviceId else {
+            throw OrigonError(
+                kind: .missingField,
+                code: "user_id",
+                message: "userId was not provided and no device identifier is available"
+            )
+        }
         let rc: Int32 = config.endpoint.withCString { endpointPtr in
             withOptionalCString(bundleId) { bundlePtr in
                 withOptionalCString(config.token) { tokenPtr in
-                    withOptionalCString(config.userId) { userIdPtr in
-                        withOptionalCString(attributesJson) { attrsPtr in
-                            var cfg = SessionClientConfig(
-                                endpoint: endpointPtr,
-                                bundle_id: bundlePtr,
-                                token: tokenPtr,
-                                user_id: userIdPtr,
-                                platform: config.platform.toC(),
-                                attributes_json: attrsPtr
-                            )
-                            return session_client_create(&cfg, &newHandle, &err)
+                    effectiveUserId.withCString { userIdPtr in
+                        withOptionalCString(deviceId) { deviceIdPtr in
+                            withOptionalCString(attributesJson) { attrsPtr in
+                                var cfg = SessionClientConfig(
+                                    endpoint: endpointPtr,
+                                    bundle_id: bundlePtr,
+                                    token: tokenPtr,
+                                    user_id: userIdPtr,
+                                    device_id: deviceIdPtr,
+                                    platform: config.platform.toC(),
+                                    attributes_json: attrsPtr
+                                )
+                                return session_client_create(&cfg, &newHandle, &err)
+                            }
                         }
                     }
                 }
@@ -53,6 +72,24 @@ public final class OrigonClient: @unchecked Sendable {
             throw OrigonError.consume(&err)
         }
         self.handle = newHandle
+        // Become the active client for push registration and flush any
+        // token buffered before initialization. See `Push.swift`.
+        PushRegistrar.shared.attach(self)
+    }
+
+    /// Resolve a stable per-install device identifier.
+    ///
+    /// iOS (and the UIKit-backed platforms) use
+    /// `identifierForVendor`, which is stable across launches and resets
+    /// only when every app from this vendor is removed. Platforms without
+    /// UIKit (macOS) return `nil`, which disables push registration and,
+    /// when no `userId` is supplied, surfaces as an init error.
+    private static func resolveDeviceId() -> String? {
+        #if canImport(UIKit)
+        return UIDevice.current.identifierForVendor?.uuidString
+        #else
+        return nil
+        #endif
     }
 
     /// Serialize a `[String: Any]?` to a JSON string. Returns `nil` when
@@ -77,9 +114,37 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     deinit {
+        // No explicit push detach needed: PushRegistrar holds the client
+        // weakly, so its reference auto-nils when we deallocate.
         if let handle {
             session_client_destroy(handle)
         }
+    }
+
+    // MARK: - Push notifications (internal)
+
+    /// Blocking FFI call — invoked off the main thread by
+    /// ``PushRegistrar``. The public, buffering entry point is the static
+    /// ``OrigonClient/registerForPushNotifications(deviceToken:environment:)``.
+    func registerPush(token: String, provider: String, environment: String?) throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc: Int32 = token.withCString { tokenPtr in
+            provider.withCString { providerPtr in
+                withOptionalCString(environment) { envPtr in
+                    session_client_register_push(handle, tokenPtr, providerPtr, envPtr, &err)
+                }
+            }
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// Blocking FFI call — invoked off the main thread by ``PushRegistrar``.
+    func unregisterPush() throws {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        let rc = session_client_unregister_push(handle, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
     }
 
     // MARK: - Cached /config getters
