@@ -24,6 +24,8 @@ Package.resolved
 *.swp
 *~
 
+*.bak
+
 # Built XCFramework — distributed via GitHub Releases, not committed.
 # Run build-xcframework.sh for local dev, release-apple-sdk.sh for publishing.
 Frameworks/
