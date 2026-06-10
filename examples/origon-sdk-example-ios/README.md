@@ -81,6 +81,6 @@ a usage string.
 
 The `OrigonSDK` Swift package is consumed via SPM from
 [github.com/Origon/apple-sdk](https://github.com/Origon/apple-sdk). The version
-rule is **Up to Next Minor Version** from `0.1.0-alpha.1`, so it tracks newer
+rule is **Up to Next Minor Version** from `0.1.0`, so it tracks newer
 `0.1.x` releases automatically. To change it, select the project in Xcode →
 **Package Dependencies** → double-click the `apple-sdk` row and edit the rule.
