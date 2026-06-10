@@ -9,9 +9,9 @@ struct OrigonSDKExampleApp: App {
     @StateObject private var sdk = SDKManager()
 
     init() {
-        #if DEBUG
-        OrigonClient.initLogging()
-        #endif
+        // #if DEBUG
+        // OrigonClient.initLogging()
+        // #endif
     }
 
     var body: some Scene {
