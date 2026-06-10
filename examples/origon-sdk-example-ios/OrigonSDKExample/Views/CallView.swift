@@ -74,7 +74,7 @@ struct CallView: View {
             // second. Sits in the same slot the web uses for "Start Talking".
             if showCallTimer && isConnectedPhase {
                 Text(formattedDuration(elapsedSeconds))
-                    .font(.title3)
+                    .font(.body)
                     .monospacedDigit()
                     .foregroundColor(Origon.textPrimary.opacity(0.5))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -105,8 +105,8 @@ struct CallView: View {
             // Bottom controls.
             HStack(spacing: 32) {
                 muteButton
-                speakerButton
                 endCallButton
+                speakerButton
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .padding(.bottom, 80)
@@ -205,7 +205,7 @@ struct CallView: View {
                 Image(systemName: sdk.call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill")
                     .font(.system(size: 22))
                     .frame(width: 24, height: 24)
-                    .foregroundColor(sdk.call.speakerOn ? .white : Origon.textPrimary.opacity(0.7))
+                    .foregroundColor(sdk.call.speakerOn ? Origon.accentForeground : Origon.textPrimary.opacity(0.7))
             }
             .frame(width: 48, height: 48)
             .scaleEffect(animateSpeakerButton ? 1.12 : 1.0)

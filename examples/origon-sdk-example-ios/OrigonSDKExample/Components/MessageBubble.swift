@@ -25,12 +25,12 @@ struct MessageBubble: View {
                 if let text = message.text, !text.isEmpty {
                     Text(text)
                         .font(.body)
-                        .foregroundColor(isSelfUser ? .white : Origon.textPrimary)
+                        .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             BubbleShape()
-                                .fill(isSelfUser ? Origon.accent : Origon.remoteBubble)
+                                .fill(isSelfUser ? Origon.selfBubble : Origon.accent)
                         )
                 }
 
@@ -137,13 +137,13 @@ private struct AttachmentRow: View {
                     .overlay(
                         Image(systemName: iconName(for: contentType))
                             .font(.system(size: 14))
-                            .foregroundColor(Origon.textSecondary)
+                            .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
                     )
             }
 
             Text(fileName)
                 .font(.subheadline)
-                .foregroundColor(isSelfUser ? .white : Origon.textPrimary)
+                .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -154,14 +154,14 @@ private struct AttachmentRow: View {
             } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 16))
-                    .foregroundColor(isSelfUser ? .white.opacity(0.8) : Origon.textSecondary)
+                    .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(minWidth: 180, maxWidth: 280, minHeight: 44)
-        .background(isSelfUser ? Origon.accent : Origon.remoteBubble)
+        .background(isSelfUser ? Origon.selfBubble : Origon.accent)
         .cornerRadius(10)
     }
 

@@ -67,13 +67,21 @@ struct ChatView: View {
                 }
                 .accessibilityLabel("Session history")
             }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: onNewSession) {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.semibold))
-                        .foregroundColor(Origon.textPrimary)
+            // Only offer "new session" once the current conversation has
+            // content. On an empty session, tapping it would just restart the
+            // same empty screen — reading as a no-op to the user.
+            if !sdk.chat.messages.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: onNewSession) {
+                        Image("PlusIcon")
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 22, height: 22)
+                            .foregroundColor(Origon.textPrimary)
+                    }
+                    .accessibilityLabel("New session")
                 }
-                .accessibilityLabel("New session")
             }
         }
         .onAppear {
@@ -205,7 +213,7 @@ struct ChatView: View {
             HStack(alignment: .bottom, spacing: 8) {
                 attachButton
 
-                TextField("Type a message", text: $inputText, axis: .vertical)
+                TextField("Message", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.body)
                     .lineLimit(1...5)
@@ -258,8 +266,11 @@ struct ChatView: View {
                 Label("Files", systemImage: "folder")
             }
         } label: {
-            Image(systemName: "paperclip")
-                .font(.system(size: 18, weight: .regular))
+            Image("AttachmentIcon")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 22, height: 22)
                 .foregroundColor(Origon.textSecondary)
                 .frame(width: 32, height: 32)
         }
@@ -285,16 +296,17 @@ struct ChatView: View {
                         .frame(width: 32, height: 32)
                     ProgressView()
                         .progressViewStyle(.circular)
-                        .tint(.white)
+                        .tint(Origon.accentForeground)
                         .scaleEffect(0.8)
                 } else {
                     Circle()
                         .fill(Origon.accent)
                         .frame(width: 32, height: 32)
                     Image(hasContent ? "SendIcon" : "VoiceIcon")
+                        .renderingMode(.template)
                         .resizable()
                         .frame(width: 20, height: 20)
-                        .foregroundColor(.white)
+                        .foregroundColor(Origon.accentForeground)
                         .id(hasContent)
                         .transition(.scale.combined(with: .opacity))
                 }

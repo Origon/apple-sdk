@@ -39,14 +39,14 @@ struct PrimaryButton: View {
             Group {
                 if loading {
                     ProgressView()
-                        .tint(.white)
+                        .tint(Origon.accentForeground)
                         .scaleEffect(0.8)
                 } else {
                     Text(title)
                         .font(.callout.weight(.medium))
                 }
             }
-            .foregroundColor(.white)
+            .foregroundColor(Origon.accentForeground)
             .frame(maxWidth: .infinity)
             .frame(height: 48)
             .background(Origon.accent)

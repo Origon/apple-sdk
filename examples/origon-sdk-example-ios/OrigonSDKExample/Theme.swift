@@ -1,7 +1,19 @@
 import SwiftUI
 
 enum Origon {
-    static let accent = Color(red: 234 / 255, green: 88 / 255, blue: 12 / 255)
+    // Accent — adaptive monochrome: black in light mode, white in dark mode.
+    // Text/content on top of `accent` should use `accentForeground` (the
+    // inverse), NOT a fixed white.
+    static let accent = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor.white : UIColor.black
+    })
+    // Foreground for content sitting on top of `accent`: white in light mode
+    // (on black), dark in dark mode (on white).
+    static let accentForeground = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0x11 / 255, alpha: 1)
+            : UIColor.white
+    })
 
     static let background = Color(.systemBackground)
     static let screenBackground = Color(UIColor { traits in
@@ -15,6 +27,14 @@ enum Origon {
     static let textTertiary = Color(.tertiaryLabel)
     static let userBubble = Color.blue
     static let remoteBubble = Color(.systemGray5)
+    // Self-user message bubble: black @ 6% in light mode, white @ 6% in dark
+    // mode. Subtle tint rather than the brand accent, so text on top uses the
+    // adaptive `textPrimary` (not white).
+    static let selfBubble = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: 0.06)
+            : UIColor(white: 0, alpha: 0.06)
+    })
     static let error = Color.red
     static let border = Color(.separator)
 
