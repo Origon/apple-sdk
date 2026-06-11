@@ -5,15 +5,21 @@ iOS and macOS SDK for the Origon platform.
 ## About
 
 The Origon SDK for Apple platforms lets you embed Origon directly in your
-iOS and macOS apps: **audio calls**, **chat** (with typing indicators,
-attachments, and message delivery status), **push notifications**, and
-**session history**.
+iOS and macOS apps: **audio calls**, **chat**, and **session history**.
 
 A basic chat + voice integration takes around 15 minutes; allow a little
 longer if you also wire up push notifications or background calls. The SDK
 authenticates your app by its **Bundle ID**, which you register once in the
 Origon Connect web app (see [Prerequisites](#prerequisites)). At runtime all
 you pass is your Origon **endpoint**.
+
+## Features
+
+- **Audio calls** — low-latency voice, with automatic Bluetooth device
+  routing.
+- **Chat** — messaging with typing indicators and attachments.
+- **Push notifications** — wake your app for incoming calls and messages.
+- **Session history** — retrieve past sessions and their messages.
 
 ## Requirements
 
