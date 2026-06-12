@@ -29,3 +29,11 @@ Package.resolved
 # Built XCFramework — distributed via GitHub Releases, not committed.
 # Run build-xcframework.sh for local dev, release-apple-sdk.sh for publishing.
 Frameworks/
+
+# Origon workspace agent files — internal team/agent memory, kept LOCAL ONLY.
+# This is a PUBLIC repo: these must never be published. (See ws/CLAUDE.md.)
+/CLAUDE.md
+/CONTRACT.md
+/RULES.md
+/TODO.md
+/LOG.md
