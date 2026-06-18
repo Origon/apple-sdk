@@ -7,8 +7,8 @@ import UIKit
 /// The primary interface to the Origon platform on Apple platforms.
 ///
 /// Backed by the `COrigonSDK` XCFramework (statically linked
-/// `libsession.a`). One instance owns one native handle and one tokio
-/// runtime; create at app start, deinit when shutting down.
+/// `libsession.a`). One instance owns one native handle and one smol
+/// executor; create at app start, deinit when shutting down.
 ///
 /// All fallible methods throw ``OrigonError`` with a structured
 /// `kind` / `statusCode` / `code` / `message`.
