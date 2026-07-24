@@ -309,6 +309,14 @@ public struct Message: Codable, Sendable, Equatable {
     public let timestamp: String?
     public let userId: String?
     public let userName: String?
+    /// Lifecycle action for a `role: .system` row: `"queued"` | `"joined"`
+    /// | `"ended"`. Set by connect on lifecycle system messages; absent on
+    /// ordinary messages and on flow-bot `.system` messages (which keep
+    /// bubble rendering — the divider discriminator is action-presence, not
+    /// role). The label is connect's server-formatted `text` ("Bo has
+    /// joined", "Conversation has ended", the queue line), rendered verbatim.
+    /// Mirrors the SDK `Message.action` passthrough (wire key `action`).
+    public let action: String?
     public let attachments: [Attachment]
     public let errorText: String?
     public let status: MessageStatus
@@ -323,6 +331,7 @@ public struct Message: Codable, Sendable, Equatable {
         timestamp: String? = nil,
         userId: String? = nil,
         userName: String? = nil,
+        action: String? = nil,
         attachments: [Attachment] = [],
         errorText: String? = nil,
         status: MessageStatus = .delivered,
@@ -336,6 +345,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.timestamp = timestamp
         self.userId = userId
         self.userName = userName
+        self.action = action
         self.attachments = attachments
         self.errorText = errorText
         self.status = status
@@ -352,6 +362,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
         self.userId = try c.decodeIfPresent(String.self, forKey: .userId)
         self.userName = try c.decodeIfPresent(String.self, forKey: .userName)
+        self.action = try c.decodeIfPresent(String.self, forKey: .action)
         self.attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
@@ -456,6 +467,52 @@ public enum DisconnectReason: Sendable, Equatable {
     case transportClosed(detail: String?)
 }
 
+// MARK: - After-call work
+
+/// After-Call-Work offer carried on a chat ``ClientEvent/chatSessionEnded``
+/// event for an **agent** participant (the wrap-up window). Absent for the
+/// visitor / widget side, which receives `reason` alone. Mirrors connect's
+/// chat `sessionEnded.acw` block one-for-one.
+///
+/// Producer: `platform/connect` chat SSE encoder
+/// (`services/http/chat/sse.rs`, `ServerEvent::SessionEnded`).
+public struct Acw: Codable, Sendable, Equatable {
+    /// Always `true` when the block is present — its presence is the signal.
+    public let enabled: Bool
+    /// Wrap-up window in seconds. `0` ⇒ open-ended server-side.
+    public let duration: UInt64
+    /// The agent cannot finish wrap-up without a disposition. Wire key is
+    /// `enforce` (not `enforced`).
+    public let enforce: Bool
+    /// RFC3339 instant the agent entered ACW.
+    public let startedAt: String?
+    /// The team's disposition tags — the pickable wrap-up chips.
+    public let dispositions: [String]
+
+    public init(
+        enabled: Bool = false,
+        duration: UInt64 = 0,
+        enforce: Bool = false,
+        startedAt: String? = nil,
+        dispositions: [String] = []
+    ) {
+        self.enabled = enabled
+        self.duration = duration
+        self.enforce = enforce
+        self.startedAt = startedAt
+        self.dispositions = dispositions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.duration = try c.decodeIfPresent(UInt64.self, forKey: .duration) ?? 0
+        self.enforce = try c.decodeIfPresent(Bool.self, forKey: .enforce) ?? false
+        self.startedAt = try c.decodeIfPresent(String.self, forKey: .startedAt)
+        self.dispositions = try c.decodeIfPresent([String].self, forKey: .dispositions) ?? []
+    }
+}
+
 // MARK: - Events
 
 /// Async event from a session. All variants carry `sessionId` so the
@@ -487,6 +544,13 @@ public enum ClientEvent: Sendable {
     /// an OS-driven change (e.g. a headset plugged in mid-call). Drive a
     /// speaker toggle from `route == .speaker`.
     case audioRouteChanged(sessionId: String, route: AudioOutputRoute)
+    /// A chat session ended cleanly — the agent or flow explicitly closed it.
+    /// Distinct from ``disconnected(sessionId:reason:)``: the SDK emits this
+    /// and then stops the chat actor WITHOUT a trailing `.disconnected`, so a
+    /// consumer renders a clean end (no "disconnected" toast). `reason` is
+    /// connect's end reason; `acw` (after-call-work) rides only an agent
+    /// participant's stream — the visitor / widget side receives `nil`.
+    case chatSessionEnded(sessionId: String, reason: String, acw: Acw?)
 
     public var sessionId: String {
         switch self {
@@ -502,7 +566,8 @@ public enum ClientEvent: Sendable {
              .peerDetached(let s, _, _),
              .disconnected(let s, _),
              .callError(let s, _),
-             .audioRouteChanged(let s, _):
+             .audioRouteChanged(let s, _),
+             .chatSessionEnded(let s, _, _):
             return s
         }
     }

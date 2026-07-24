@@ -702,6 +702,35 @@ public final class OrigonClient: @unchecked Sendable {
         return try? JSONDecoder().decode(Message.self, from: data)
     }
 
+    /// Wire shape of the `chatSessionEnded` payload, which rides the FFI's
+    /// `message_json` slot as `{reason, acw?}` (same field the message
+    /// events use). `acw` is present only on an agent participant's stream.
+    private struct SessionEndedPayload: Decodable {
+        let reason: String
+        let acw: Acw?
+
+        private enum CodingKeys: String, CodingKey { case reason, acw }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            self.acw = try c.decodeIfPresent(Acw.self, forKey: .acw)
+        }
+    }
+
+    /// Decode the `chatSessionEnded` payload from `message_json`. A missing
+    /// or malformed payload degrades to an empty reason with no ACW — the
+    /// clean-end signal itself (the event kind) is what matters.
+    private static func decodeSessionEnded(_ cstr: UnsafeMutablePointer<CChar>?) -> (reason: String, acw: Acw?) {
+        guard let cstr else { return ("", nil) }
+        let json = String(cString: cstr)
+        guard
+            let data = json.data(using: .utf8),
+            let payload = try? JSONDecoder().decode(SessionEndedPayload.self, from: data)
+        else { return ("", nil) }
+        return (payload.reason, payload.acw)
+    }
+
     private func mapEvent(_ ev: SessionEvent) -> ClientEvent? {
         guard let sidPtr = ev.session_id else { return nil }
         let sid = String(cString: sidPtr)
@@ -762,6 +791,10 @@ public final class OrigonClient: @unchecked Sendable {
         case SESSION_EVENT_AUDIO_ROUTE_CHANGED:
             let route = AudioOutputRoute(rawValue: ev.audio_route) ?? .automatic
             return .audioRouteChanged(sessionId: sid, route: route)
+
+        case SESSION_EVENT_CHAT_SESSION_ENDED:
+            let ended = Self.decodeSessionEnded(ev.message_json)
+            return .chatSessionEnded(sessionId: sid, reason: ended.reason, acw: ended.acw)
 
         default:
             return nil
