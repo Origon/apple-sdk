@@ -524,19 +524,21 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Attachments
 
-    /// Chat-only — stream a file at `path` to the named chat session
-    /// and return the server-issued ``Attachment``.
+    /// Stream a file at `path` to the WIDGET this client was created
+    /// for and return the server-issued ``Attachment``.
+    ///
+    /// There is no `sessionId` and no session prerequisite — an
+    /// attachment can be the first thing a visitor sends.
     ///
     /// For security-scoped `URL`s from `UIDocumentPicker` use the
     /// `url:` overload; for in-memory `Data` use the `data:` overload.
     /// Pass `uploadId` (default: fresh UUID) and hand the same value to
-    /// ``deleteAttachment(sessionId:attachmentId:)`` to cancel
-    /// in-flight. `onProgress` is invoked on `@MainActor`.
+    /// ``deleteAttachment(attachmentId:)`` to cancel in-flight.
+    /// `onProgress` is invoked on `@MainActor`.
     ///
     /// See `client-sdk/session/docs/contract.md#attachment-flow` for
     /// MIME detection, policy prechecks, and error code semantics.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         path: String,
         fileName: String,
@@ -576,7 +578,6 @@ public final class OrigonClient: @unchecked Sendable {
             let attachment = try await Task.detached {
                 try Self.invokeUploadAttachment(
                     handle: handleRef,
-                    sessionId: sessionId,
                     uploadId: uploadId,
                     path: path,
                     fileName: fileName,
@@ -600,7 +601,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// `NSTemporaryDirectory()` and delegates to the path-based
     /// overload. Temp file is removed on every exit path.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         data: Data,
         fileName: String,
@@ -614,7 +614,6 @@ public final class OrigonClient: @unchecked Sendable {
         try data.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         return try await uploadAttachment(
-            sessionId: sessionId,
             uploadId: uploadId,
             path: tempURL.path,
             fileName: fileName,
@@ -626,7 +625,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// `startAccessingSecurityScopedResource()` automatically for
     /// `UIDocumentPicker`-style URLs.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         url: URL,
         fileName: String? = nil,
@@ -638,7 +636,6 @@ public final class OrigonClient: @unchecked Sendable {
         }
         let resolvedName = fileName ?? url.lastPathComponent
         return try await uploadAttachment(
-            sessionId: sessionId,
             uploadId: uploadId,
             path: url.path,
             fileName: resolvedName,
@@ -646,19 +643,17 @@ public final class OrigonClient: @unchecked Sendable {
         )
     }
 
-    /// Chat-only — dual-purpose: cancel an in-flight upload (when
-    /// `attachmentId` matches an active `uploadId`) or `DELETE` a
-    /// completed attachment by server id. See
-    /// `client-sdk/session/docs/contract.md#cancellation`.
-    public func deleteAttachment(sessionId: String, attachmentId: String) async throws {
+    /// Dual-purpose: cancel an in-flight upload (when `attachmentId`
+    /// matches an active `uploadId`) or `DELETE` a completed attachment
+    /// by server id. Session-less like ``uploadAttachment(uploadId:path:fileName:onProgress:)``.
+    /// See `client-sdk/session/docs/contract.md#cancellation`.
+    public func deleteAttachment(attachmentId: String) async throws {
         guard let handle else { throw OrigonError.notInitialized }
         let handleRef = handle
         try await Task.detached {
             var err = SessionError()
-            let rc = sessionId.withCString { sidPtr in
-                attachmentId.withCString { aidPtr in
-                    session_client_delete_attachment(handleRef, sidPtr, aidPtr, &err)
-                }
+            let rc = attachmentId.withCString { aidPtr in
+                session_client_delete_attachment(handleRef, aidPtr, &err)
             }
             if rc != 0 { throw OrigonError.consume(&err) }
         }.value
@@ -667,7 +662,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// Blocking FFI call, intended for use from a detached task.
     private static func invokeUploadAttachment(
         handle: OpaquePointer,
-        sessionId: String,
         uploadId: String,
         path: String,
         fileName: String,
@@ -676,22 +670,19 @@ public final class OrigonClient: @unchecked Sendable {
     ) throws -> Attachment {
         var err = SessionError()
         var outJson: UnsafeMutablePointer<CChar>?
-        let rc: Int32 = sessionId.withCString { sidPtr in
-            uploadId.withCString { uidPtr in
-                path.withCString { pathPtr in
-                    fileName.withCString { namePtr in
-                        session_client_upload_attachment(
-                            handle,
-                            sidPtr,
-                            uidPtr,
-                            pathPtr,
-                            namePtr,
-                            callback,
-                            ctx,
-                            &outJson,
-                            &err
-                        )
-                    }
+        let rc: Int32 = uploadId.withCString { uidPtr in
+            path.withCString { pathPtr in
+                fileName.withCString { namePtr in
+                    session_client_upload_attachment(
+                        handle,
+                        uidPtr,
+                        pathPtr,
+                        namePtr,
+                        callback,
+                        ctx,
+                        &outJson,
+                        &err
+                    )
                 }
             }
         }
