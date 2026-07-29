@@ -91,9 +91,8 @@ public struct ClientConfig: Sendable {
     }
 }
 
-/// Options for `OrigonClient.startSession`.
-public struct StartSessionOptions: Sendable {
-    public let channel: Channel
+/// Options for `OrigonClient.startCall`.
+public struct StartCallOptions: Sendable {
     /// Existing session id to resume; `nil` for a new session.
     public let sessionId: String?
     /// Optional consumer-defined raw JSON forwarded as `data` on the wire.
@@ -101,8 +100,7 @@ public struct StartSessionOptions: Sendable {
 
     /// Raw-JSON initializer. Use this when `data` is already a JSON
     /// string (or `nil` to omit it).
-    public init(channel: Channel, sessionId: String? = nil, data: String? = nil) {
-        self.channel = channel
+    public init(sessionId: String? = nil, data: String? = nil) {
         self.sessionId = sessionId
         self.data = data
     }
@@ -111,12 +109,7 @@ public struct StartSessionOptions: Sendable {
     /// (e.g. `[String: String]` or a typed struct) and serializes it
     /// to JSON before forwarding. If encoding fails, `data` is set to
     /// `nil` — the call still proceeds, just without the optional payload.
-    public init<T: Encodable>(
-        channel: Channel,
-        sessionId: String? = nil,
-        data: T
-    ) {
-        self.channel = channel
+    public init<T: Encodable>(sessionId: String? = nil, data: T) {
         self.sessionId = sessionId
         if let bytes = try? JSONEncoder().encode(data) {
             self.data = String(data: bytes, encoding: .utf8)
@@ -126,7 +119,50 @@ public struct StartSessionOptions: Sendable {
     }
 }
 
-/// Response from `OrigonClient.startSession`.
+/// Options for `OrigonClient.startChat`.
+///
+/// `firstMessage` is REQUIRED, and that is the whole point of the split from
+/// the old `startSession`. The server runs a two-stage gate on every chat:
+/// the flow does not start until the visitor has actually said something, and
+/// a session that stays silent past the deadline is reaped. An API that
+/// opened a session and then waited for a human to type was racing that
+/// deadline; carrying the message here makes the race unreachable.
+///
+/// Attachment-only is valid — the gate fires on ANY visitor content.
+public struct StartChatOptions: Sendable {
+    /// The visitor's first message. Required.
+    public let firstMessage: SendMessagePayload
+    /// Existing session id to resume; `nil` for a new session.
+    public let sessionId: String?
+    /// Optional consumer-defined raw JSON forwarded as `data` on the wire.
+    public let data: String?
+
+    public init(
+        firstMessage: SendMessagePayload,
+        sessionId: String? = nil,
+        data: String? = nil
+    ) {
+        self.firstMessage = firstMessage
+        self.sessionId = sessionId
+        self.data = data
+    }
+
+    public init<T: Encodable>(
+        firstMessage: SendMessagePayload,
+        sessionId: String? = nil,
+        data: T
+    ) {
+        self.firstMessage = firstMessage
+        self.sessionId = sessionId
+        if let bytes = try? JSONEncoder().encode(data) {
+            self.data = String(data: bytes, encoding: .utf8)
+        } else {
+            self.data = nil
+        }
+    }
+}
+
+/// Response from `OrigonClient.startCall` / `startChat`.
 public struct StartSessionResponse: Sendable {
     public let sessionId: String
     public let url: String
@@ -140,16 +176,15 @@ public struct StartSessionResponse: Sendable {
     }
 }
 
-/// Input for `OrigonClient.joinSession` — a previously-obtained
-/// `StartSessionResponse` plus the channel.
-public struct JoinSessionInput: Sendable {
-    public let channel: Channel
+/// Input for `OrigonClient.joinCall` / `OrigonClient.joinChat` — a
+/// previously-obtained `StartSessionResponse`. No channel: the method
+/// carries it.
+public struct JoinInput: Sendable {
     public let sessionId: String
     public let url: String
     public let token: String
 
-    public init(channel: Channel, sessionId: String, url: String, token: String) {
-        self.channel = channel
+    public init(sessionId: String, url: String, token: String) {
         self.sessionId = sessionId
         self.url = url
         self.token = token
