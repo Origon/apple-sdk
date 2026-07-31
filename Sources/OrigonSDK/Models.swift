@@ -335,6 +335,79 @@ public struct UploadProgress: Codable, Sendable, Equatable {
 /// the wire round-trip. The server-issued `id` lands on the follow-up
 /// `MessageUpdated`. The stable lookup key during the sending phase is
 /// `localId`; once delivered, both `id` and `localId` are populated.
+/// One option on an interactive flow prompt — `Message.buttons`, or a
+/// gallery card's own button stack.
+///
+/// The visitor answers by sending `SendMessagePayload.value` set to this
+/// option's `value`. The server matches on **`value`**, never on `label`.
+public struct MessageButton: Codable, Sendable, Equatable {
+    /// The caption to render. Wire key `label` on this lane — the platform
+    /// GraphQL read spells the same field `text`, so shapes from that
+    /// source are not interchangeable with these.
+    public let label: String
+    /// The match key sent back in `SendMessagePayload.value`.
+    public let value: String
+    /// Authored kind — `"text"` / `"postback"` / `"url"`. A free string,
+    /// not an enum: an unknown kind must degrade, not fail to decode.
+    public let buttonType: String
+
+    /// `buttonType` rides the wire key **`type`**. Without this mapping it
+    /// would encode as `buttonType` and decode to empty, silently turning
+    /// every URL button into a plain postback.
+    private enum CodingKeys: String, CodingKey {
+        case label
+        case value
+        case buttonType = "type"
+    }
+
+    public init(label: String = "", value: String = "", buttonType: String = "") {
+        self.label = label
+        self.value = value
+        self.buttonType = buttonType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        self.value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        self.buttonType = try c.decodeIfPresent(String.self, forKey: .buttonType) ?? ""
+    }
+}
+
+/// One card in a `Message.gallery` carousel.
+public struct MessageCard: Codable, Sendable, Equatable {
+    /// Card heading. Doubles as the gallery match key — a reply sends it as
+    /// `SendMessagePayload.galleryLabel`.
+    public let title: String
+    public let description: String
+    /// **Optional, and legitimately so** — the server emits `null` for a
+    /// card authored without an image. Unwrap it before rendering; a card
+    /// with no image is valid, not malformed.
+    public let image: Attachment?
+    /// This card's own options, same shape as the top-level array.
+    public let buttons: [MessageButton]
+
+    public init(
+        title: String = "",
+        description: String = "",
+        image: Attachment? = nil,
+        buttons: [MessageButton] = []
+    ) {
+        self.title = title
+        self.description = description
+        self.image = image
+        self.buttons = buttons
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        self.description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        self.image = try c.decodeIfPresent(Attachment.self, forKey: .image)
+        self.buttons = try c.decodeIfPresent([MessageButton].self, forKey: .buttons) ?? []
+    }
+}
+
 public struct Message: Codable, Sendable, Equatable {
     public let role: MessageRole
     public let id: String
@@ -353,6 +426,14 @@ public struct Message: Codable, Sendable, Equatable {
     /// Mirrors the SDK `Message.action` passthrough (wire key `action`).
     public let action: String?
     public let attachments: [Attachment]
+    /// Interactive prompt options on a flow-authored `.system` row. Empty
+    /// on every ordinary message — a non-empty array is what makes this
+    /// message a prompt. Note a prompt carries NO `action`, so it must stay
+    /// on the bubble branch, not the lifecycle-divider branch.
+    public let buttons: [MessageButton]
+    /// Gallery-card carousel on a flow-authored `.system` row — the
+    /// card-shaped sibling of `buttons`. Empty on ordinary messages.
+    public let gallery: [MessageCard]
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
@@ -368,6 +449,8 @@ public struct Message: Codable, Sendable, Equatable {
         userName: String? = nil,
         action: String? = nil,
         attachments: [Attachment] = [],
+        buttons: [MessageButton] = [],
+        gallery: [MessageCard] = [],
         errorText: String? = nil,
         status: MessageStatus = .delivered,
         state: MessageState = .completed
@@ -382,6 +465,8 @@ public struct Message: Codable, Sendable, Equatable {
         self.userName = userName
         self.action = action
         self.attachments = attachments
+        self.buttons = buttons
+        self.gallery = gallery
         self.errorText = errorText
         self.status = status
         self.state = state
@@ -399,6 +484,8 @@ public struct Message: Codable, Sendable, Equatable {
         self.userName = try c.decodeIfPresent(String.self, forKey: .userName)
         self.action = try c.decodeIfPresent(String.self, forKey: .action)
         self.attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        self.buttons = try c.decodeIfPresent([MessageButton].self, forKey: .buttons) ?? []
+        self.gallery = try c.decodeIfPresent([MessageCard].self, forKey: .gallery) ?? []
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
@@ -411,11 +498,32 @@ public struct SendMessagePayload: Codable, Sendable {
     public let text: String?
     public let html: String?
     public let attachments: [Attachment]
+    /// The chosen `MessageButton.value` when this send answers an
+    /// interactive prompt. The server matches a button on this, falling
+    /// back to `text` — so `text` must ALSO be set (to the option's label):
+    /// a body with no `text`/`html`/`attachments` is refused with a 400
+    /// before the flow ever sees it.
+    public let value: String?
+    /// The picked `MessageCard.title` when answering a gallery prompt. The
+    /// server matches a gallery pick on the PAIR `(galleryLabel, value)`,
+    /// which is what disambiguates two cards sharing a button value. Leave
+    /// nil for a plain button reply.
+    public let galleryLabel: String?
 
-    public init(text: String? = nil, html: String? = nil, attachments: [Attachment] = []) {
+    /// Both prompt keys are `Optional`, so Swift's synthesised encoder
+    /// omits them when nil — an ordinary message carries neither key.
+    public init(
+        text: String? = nil,
+        html: String? = nil,
+        attachments: [Attachment] = [],
+        value: String? = nil,
+        galleryLabel: String? = nil
+    ) {
         self.text = text
         self.html = html
         self.attachments = attachments
+        self.value = value
+        self.galleryLabel = galleryLabel
     }
 }
 
