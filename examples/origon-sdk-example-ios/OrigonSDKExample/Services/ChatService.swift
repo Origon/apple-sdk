@@ -127,18 +127,17 @@ final class ChatService: ObservableObject {
         }
         guard let client = sdk?.client else { return }
         do {
-            // Fetch history first, then open the chat channel. Ordering
-            // means any live events arriving after `startSession` find a
-            // pre-populated state to merge into.
+            // View-only open: fetch the history and render it, but do NOT
+            // call `startChat` — that verb exists to open a session WITH the
+            // visitor's first message, and opening one here just to read a
+            // past conversation would attach a participant and start a chat
+            // nobody has spoken in. The session goes live on the first send.
             let history = try await Task.detached {
                 try client.getSession(id: id)
             }.value
-            let response = try await Task.detached {
-                try client.startSession(StartSessionOptions(channel: .chat, sessionId: id))
-            }.value
-            sessionsState[response.sessionId] = SessionUIState(messages: history.history)
-            currentSessionId = response.sessionId
-            adoptDrafts(into: response.sessionId)
+            sessionsState[id] = SessionUIState(messages: history.history)
+            currentSessionId = id
+            adoptDrafts(into: id)
             // Refresh sidebar so the now-open session shows up.
             try? await sdk?.getSessions()
         } catch {
@@ -162,9 +161,13 @@ final class ChatService: ObservableObject {
         draftPendingAttachments = []
     }
 
-    /// Send a text message + any completed attachments on the focused
-    /// session. Lazily opens a fresh SDK chat session on the first send
-    /// when there is none.
+    /// Send a text message + any completed attachments.
+    ///
+    /// With a session already focused this is a plain `sendMessage`. With
+    /// none, the send IS the open: `startChat` carries the visitor's first
+    /// message, so there is no window where a session exists but has said
+    /// nothing (the server gates the flow on visitor content and reaps a
+    /// silent session — see `StartChatOptions`).
     ///
     /// Does not mutate `messages` directly — the SDK fires
     /// `messageAdded(provisional)` and `messageUpdated(delivered/failed)`
@@ -172,20 +175,28 @@ final class ChatService: ObservableObject {
     /// updates.
     func sendMessage(text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            let id = try await ensureChatSession()
-            let completed = (sessionsState[id]?.pendingAttachments ?? [])
-                .compactMap { $0.status == .completed ? $0.attachment : nil }
-            guard !trimmed.isEmpty || !completed.isEmpty else { return }
-            guard let client = sdk?.client else { return }
+        // Read tiles through the accessor: with no session focused they are
+        // still on the draft list, and an attachment-only first message is
+        // valid.
+        let completed = pendingAttachments
+            .compactMap { $0.status == .completed ? $0.attachment : nil }
+        guard !trimmed.isEmpty || !completed.isEmpty else { return }
+        guard let client = sdk?.client else { return }
 
-            let payload = SendMessagePayload(
-                text: trimmed.isEmpty ? nil : trimmed,
-                attachments: completed
-            )
-            _ = try await Task.detached {
-                try client.sendMessage(id: id, payload: payload)
-            }.value
+        let payload = SendMessagePayload(
+            text: trimmed.isEmpty ? nil : trimmed,
+            attachments: completed
+        )
+        do {
+            let id: String
+            if let existing = currentSessionId {
+                id = existing
+                _ = try await Task.detached {
+                    try client.sendMessage(id: existing, payload: payload)
+                }.value
+            } else {
+                id = try await openAndSend(payload: payload)
+            }
 
             // Completed attachments are now owned by the sent message;
             // any rows still in `.uploading` / `.error` are left alone
@@ -356,6 +367,14 @@ final class ChatService: ObservableObject {
                 if currentSessionId == sid { currentSessionId = nil }
             }
 
+        case .chatSessionEnded:
+            // Clean end — the agent or flow closed the chat. State is
+            // deliberately KEPT so the user stays on the transcript, and
+            // there is no error toast: this is not a failure. A production
+            // app would also flip the composer read-only and show an
+            // "ended" divider; that is UI work this example leaves out.
+            break
+
         case .sessionUpdated, .connected, .reconnecting, .reconnected,
              .controlUpdated, .peerAttached, .peerDetached, .callError,
              .audioRouteChanged:
@@ -386,21 +405,35 @@ final class ChatService: ObservableObject {
 
     // MARK: - Upload internals
 
-    /// Resolve a chat session id — focused if already open, otherwise
-    /// start one. Only the SEND path calls this; uploads are
-    /// widget-scoped and never open a session. Concurrent callers join
-    /// the same in-flight start, so at most one `POST /session/start`
-    /// fires per send burst and the draft → session migration happens
-    /// exactly once.
-    private func ensureChatSession() async throws -> String {
-        if let id = currentSessionId { return id }
-        if let task = sessionStartTask { return try await task.value }
+    /// Open a chat session by SENDING — `startChat` carries `payload` as the
+    /// visitor's first message and returns the new session id.
+    ///
+    /// This is the only path that opens a chat. Uploads are widget-scoped
+    /// and never open one, and the sidebar's `openSession` is view-only.
+    ///
+    /// A second send arriving while a start is in flight joins that start
+    /// and then sends normally — it must NOT start its own session, and it
+    /// can't join by payload either, since the first message is already
+    /// spoken for.
+    private func openAndSend(payload: SendMessagePayload) async throws -> String {
         guard let client = sdk?.client else { throw OrigonError.notInitialized }
+
+        if let inFlight = sessionStartTask {
+            let id = try await inFlight.value
+            _ = try await Task.detached {
+                try client.sendMessage(id: id, payload: payload)
+            }.value
+            return id
+        }
 
         let task = Task<String, Error> { [weak self] in
             do {
+                // `startChat` returns the session id BEFORE the message goes
+                // out, and a first message that fails to DELIVER does not
+                // throw — it arrives as `messageUpdated(.failed)` so the user
+                // can retry. Only a terminal refusal throws.
                 let response = try await Task.detached {
-                    try client.startSession(StartSessionOptions(channel: .chat, sessionId: nil))
+                    try client.startChat(StartChatOptions(firstMessage: payload))
                 }.value
                 await MainActor.run {
                     guard let self else { return }
@@ -415,8 +448,6 @@ final class ChatService: ObservableObject {
                     self.draftPendingAttachments = []
                     // Only steal focus if the user didn't navigate to a
                     // different session while the start was in flight.
-                    // The new session stays alive in the background
-                    // either way so the upload completes against it.
                     if self.currentSessionId == nil {
                         self.currentSessionId = response.sessionId
                     }

@@ -58,17 +58,17 @@ final class CallService: ObservableObject {
         muted = false
         speakerOn = false
         do {
-            // `startSession` blocks on the FFI runtime (HTTP + QUIC dial).
+            // `startCall` blocks on the FFI runtime (HTTP + QUIC dial).
             // Hop off the main actor so SwiftUI commits the `.connecting`
             // change and renders the loading state before we block;
             // otherwise the whole sync call happens in one main-thread
             // tick and SwiftUI only ever renders the final phase.
             let response = try await Task.detached {
-                try client.startSession(StartSessionOptions(channel: .voice))
+                try client.startCall(StartCallOptions())
             }.value
             sessionId = response.sessionId
         } catch {
-            // The synchronous throw fires when `startSession` fails to
+            // The synchronous throw fires when `startCall` fails to
             // dial the transport (e.g. TLS / DNS / QUIC). The SDK also
             // emits a `Disconnected(TransportClosed)` event for the
             // same failure, but it's dropped by `handleEvent` because
@@ -164,7 +164,8 @@ final class CallService: ObservableObject {
         // voice session id ever shows up on a chat event.
         case .controlUpdated, .typing, .sessionUpdated,
              .peerAttached, .peerDetached,
-             .messageAdded, .messageUpdated:
+             .messageAdded, .messageUpdated,
+             .chatSessionEnded:
             break
         }
     }

@@ -85,12 +85,12 @@ struct ChatView: View {
             }
         }
         .onAppear {
-            startSessionIfNeeded()
+            focusSessionIfNeeded()
         }
         .onChange(of: sessionId) { _ in
             hasStartedSession = false
             hasFocusedOnce = false
-            startSessionIfNeeded()
+            focusSessionIfNeeded()
         }
         .onChange(of: sdk.chat.currentSessionId) { _ in
             guard !hasFocusedOnce else { return }
@@ -361,7 +361,7 @@ struct ChatView: View {
         }
     }
 
-    private func startSessionIfNeeded() {
+    private func focusSessionIfNeeded() {
         guard !hasStartedSession else { return }
         hasStartedSession = true
         Task { await sdk.chat.openSession(id: sessionId) }
