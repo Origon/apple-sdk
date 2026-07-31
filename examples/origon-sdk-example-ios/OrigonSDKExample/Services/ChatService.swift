@@ -21,11 +21,12 @@ import OrigonSDK
 ///   `client.sendMessage`. The SDK auto-fires `messageAdded(provisional)`
 ///   and `messageUpdated(delivered/failed)`; the event handler is what
 ///   populates `messages`.
-/// - `uploadFile(...)` lazily opens an SDK chat session on the first
-///   upload when there is none, then drives the upload through the SDK
-///   with live `onProgress` updates. Attachments persist as
-///   `PendingAttachment` rows until either bundled into a `sendMessage`
-///   or removed by the user (which also deletes the server-side blob).
+/// - `uploadFile(...)` drives the upload straight through the SDK with
+///   live `onProgress` updates. The write lane is widget-scoped, so no
+///   session is opened for it — an attachment can be the first thing a
+///   visitor sends. Attachments persist as `PendingAttachment` rows
+///   until either bundled into a `sendMessage` or removed by the user
+///   (which also deletes the server-side blob).
 /// - `endCurrentSession()` ends the focused SDK session and drops its
 ///   UI state. Background sessions are unaffected.
 @MainActor
@@ -44,18 +45,21 @@ final class ChatService: ObservableObject {
     @Published private(set) var currentSessionId: String?
     @Published var error: String?
 
-    /// Pending uploads queued before any chat session exists. Migrated
-    /// into `sessionsState[<new id>].pendingAttachments` exactly once,
-    /// inside `ensureChatSession`, when the lazy session-start resolves.
+    /// Pending uploads queued before any chat session exists. Uploads no
+    /// longer wait on a session, so this list is drained by whichever
+    /// comes first: `ensureChatSession` (the lazy start on the first
+    /// send) or `adoptDrafts(into:)` (the user focusing an existing
+    /// session). Both move the rows into that session's
+    /// `pendingAttachments`.
     @Published private(set) var draftPendingAttachments: [PendingAttachment] = []
 
     private weak var sdk: SDKManager?
     private var cancellables = Set<AnyCancellable>()
 
-    /// In-flight lazy session-start. Racing callers (e.g. user picks two
-    /// files in quick succession with no session yet) all `await` this
-    /// single task so only one `POST /session/start` fires and the
-    /// draft → session migration happens exactly once.
+    /// In-flight lazy session-start. Racing callers (e.g. the user taps
+    /// send twice with no session yet) all `await` this single task so
+    /// only one `POST /session/start` fires and the draft → session
+    /// migration happens exactly once.
     private var sessionStartTask: Task<String, Error>?
 
     /// SDKManager creates this and calls `bind(to:)` once it can pass `self`.
@@ -118,6 +122,7 @@ final class ChatService: ObservableObject {
         }
         if sessionsState[id] != nil {
             currentSessionId = id
+            adoptDrafts(into: id)
             return
         }
         guard let client = sdk?.client else { return }
@@ -133,11 +138,28 @@ final class ChatService: ObservableObject {
             }.value
             sessionsState[response.sessionId] = SessionUIState(messages: history.history)
             currentSessionId = response.sessionId
+            adoptDrafts(into: response.sessionId)
             // Refresh sidebar so the now-open session shows up.
             try? await sdk?.getSessions()
         } catch {
             self.error = "Failed to open session: \(error.localizedDescription)"
         }
+    }
+
+    /// Move any draft tiles onto the session being focused.
+    ///
+    /// The draft list holds rows picked while nothing was open. Uploads no
+    /// longer wait on a session, so nothing drains that list on its own any
+    /// more — and the `pendingAttachments` accessor stops reading it the
+    /// moment a real session is focused. Left alone, a tile picked before
+    /// opening a conversation would vanish from the composer (unremovable,
+    /// its blob stranded on the server) and then silently reappear on
+    /// whichever session happened to be started next. Adopting it here keeps
+    /// it visible and removable in the chat the user is actually looking at.
+    private func adoptDrafts(into id: String) {
+        guard !draftPendingAttachments.isEmpty else { return }
+        sessionsState[id]?.pendingAttachments.append(contentsOf: draftPendingAttachments)
+        draftPendingAttachments = []
     }
 
     /// Send a text message + any completed attachments on the focused
@@ -230,7 +252,6 @@ final class ChatService: ObservableObject {
         // session's pending list — the row may have started life in
         // the draft and migrated into a session.
         var removed: PendingAttachment?
-        var hostSessionId: String?
         if let i = draftPendingAttachments.firstIndex(where: { $0.id == id }) {
             removed = draftPendingAttachments[i]
             draftPendingAttachments.remove(at: i)
@@ -240,7 +261,6 @@ final class ChatService: ObservableObject {
                     var s = state
                     removed = s.pendingAttachments.remove(at: i)
                     sessionsState[sid] = s
-                    hostSessionId = sid
                     break
                 }
             }
@@ -249,29 +269,23 @@ final class ChatService: ObservableObject {
 
         switch removed.status {
         case .uploading:
-            // In-flight cancel only makes sense once the upload has a
-            // session to run against. While the row is still on the
-            // draft list (no host session yet), `runUpload`'s
-            // pendingExists guard aborts the upload before any wire
-            // work starts — no cancel needed.
-            guard let sid = hostSessionId else { return }
             // The SDK's deleteAttachment is dual-purpose: it matches
             // our local id against its in-flight upload table and
             // tears down the QUIC stream with a RESET. The upload's
             // awaiter throws `.cancelled`, which `runUpload` swallows.
+            // Fires regardless of which list hosted the row — the write
+            // lane is widget-scoped, and a draft-list upload is now the
+            // common case since uploads no longer wait on a session.
             Task.detached {
-                try? await client.deleteAttachment(sessionId: sid, attachmentId: id)
+                try? await client.deleteAttachment(attachmentId: id)
             }
 
         case .completed:
             // Server already has the blob; clean it up with its
             // server-issued id.
-            guard
-                let sid = hostSessionId,
-                let serverId = removed.attachment?.id
-            else { return }
+            guard let serverId = removed.attachment?.id else { return }
             Task.detached {
-                try? await client.deleteAttachment(sessionId: sid, attachmentId: serverId)
+                try? await client.deleteAttachment(attachmentId: serverId)
             }
 
         case .error:
@@ -373,9 +387,11 @@ final class ChatService: ObservableObject {
     // MARK: - Upload internals
 
     /// Resolve a chat session id — focused if already open, otherwise
-    /// start one. Concurrent callers join the same in-flight start, so
-    /// at most one `POST /session/start` fires per draft burst and the
-    /// draft → session migration happens exactly once.
+    /// start one. Only the SEND path calls this; uploads are
+    /// widget-scoped and never open a session. Concurrent callers join
+    /// the same in-flight start, so at most one `POST /session/start`
+    /// fires per send burst and the draft → session migration happens
+    /// exactly once.
     private func ensureChatSession() async throws -> String {
         if let id = currentSessionId { return id }
         if let task = sessionStartTask { return try await task.value }
@@ -427,27 +443,16 @@ final class ChatService: ObservableObject {
             }
             return
         }
-        let sid: String
-        do {
-            sid = try await ensureChatSession()
-        } catch {
-            updatePending(localId: localId) {
-                $0.status = .error
-                $0.errorText = "Couldn't start chat session"
-            }
-            return
-        }
-
-        // The user can × the tile while we're waiting for the session
-        // to come up — at that point there's no session id yet so
-        // `removePendingAttachment` couldn't fire a cancel. If the row
-        // is gone by the time we get here, abort before any wire work
-        // starts: no orphan attachment on the server, no wasted bytes.
+        // `uploadFile` appends the row and then ENQUEUES this task, so an ×
+        // tap can run in between. If the row is gone by the time we get
+        // here, abort before any wire work starts — the cancel it fired
+        // landed before the SDK registered its in-flight entry, so it would
+        // have degraded to a DELETE of an id the server never saw, leaving
+        // an orphan blob behind this upload.
         guard pendingExists(localId: localId) else { return }
 
         do {
             let attachment = try await client.uploadAttachment(
-                sessionId: sid,
                 uploadId: localId,
                 data: data,
                 fileName: fileName,
