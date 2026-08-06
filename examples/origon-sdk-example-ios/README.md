@@ -48,6 +48,8 @@ If you want to wire OrigonSDK into your own app, start with these files:
 | `Views/RootChatView.swift` | Boots the SDK, lists sessions, hosts ChatView + CallView. |
 | `Views/ChatView.swift` | Composes messages, drives upload UI, kicks off calls. |
 | `Views/CallView.swift` | Active-call surface (logo, mute, end). |
+| `Components/MessageBubble.swift` | One transcript row. **Note the divider rule:** a lifecycle row is discriminated by the presence of `Message.action`, *not* by `role == .system` — a `.system` message with no action is a flow-bot prompt and stays a bubble. |
+| `Components/MessageButtons.swift`, `Components/MessageGallery.swift` | Interactive prompt options. A `"url"` option opens the link **and** posts the reply — the flow still has to walk that edge. |
 
 ## Project layout
 
@@ -84,3 +86,12 @@ The `OrigonSDK` Swift package is consumed via SPM from
 rule is **Up to Next Minor Version** from `0.1.0`, so it tracks newer
 `0.1.x` releases automatically. To change it, select the project in Xcode →
 **Package Dependencies** → double-click the `apple-sdk` row and edit the rule.
+
+## Scope notes
+
+The example authenticates **by endpoint only** — it never signs a person in, so
+there is no login, profile, or account screen. It carries no test target; the
+shipped Origon apps hold the regression coverage for these surfaces.
+
+There are no screenshots, deliberately. A screenshot in a repo goes stale the
+moment the UI moves, and this app is meant to be read and run.
