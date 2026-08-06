@@ -50,7 +50,7 @@
 		67549FFD7794AEB5D310656A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		67AA10FDB516827C21A013C0 /* OrigonSDKExampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrigonSDKExampleApp.swift; sourceTree = "<group>"; };
 		6B517BD7B7AB496371341EEB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OrigonSDKExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrigonSDKExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		948866B17BAB9F6BC258F114 /* TypingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingIndicator.swift; sourceTree = "<group>"; };
 		95D0F69486DF4BFC82909CA9 /* EndpointView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointView.swift; sourceTree = "<group>"; };
 		A1365C2F9A706A56EAB6B353 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -434,7 +434,7 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Origon/apple-sdk";
 			requirement = {
-				kind = upToNextMinorVersion;
+				kind = upToNextMajorVersion;
 				minimumVersion = 0.1.0;
 			};
 		};
