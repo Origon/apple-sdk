@@ -18,6 +18,48 @@ struct MessageBubble: View {
     }
 
     var body: some View {
+        // A lifecycle system row (action present: queued / joined / ended)
+        // renders as a centered divider; a `.system` row WITHOUT an action is
+        // a connect flow-bot message and keeps bubble rendering. The
+        // discriminator is **action-presence, not role** — branching on
+        // `role == .system` would silently swallow every flow-bot message.
+        // Vocabulary is connect's; see `Message.action` in the SDK.
+        if let action = message.action, !action.isEmpty {
+            systemDivider
+        } else {
+            bubbleBody
+        }
+    }
+
+    /// Centered divider for a lifecycle system row. The label is connect's
+    /// server-formatted `text` — "Bo has joined", "Conversation has ended",
+    /// "You're in <queue> queue" — rendered VERBATIM. connect owns the
+    /// phrasing and pins the actor into `text`, and passes `userId`/`userName`
+    /// as EMPTY strings for `queued`/`ended`, so a client that composed its own
+    /// wording from `userName` would render nothing at all.
+    private var systemDivider: some View {
+        HStack(spacing: 10) {
+            dividerLine
+            Text(message.text ?? "")
+                .font(.caption)
+                .foregroundColor(Origon.textTertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+            dividerLine
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(Origon.border)
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+    }
+
+    private var bubbleBody: some View {
         HStack {
             if isSelfUser { Spacer(minLength: 60) }
 
