@@ -161,7 +161,28 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(Array(sdk.chat.messages.enumerated()), id: \.offset) { index, message in
-                        MessageBubble(message: message, selectedIndex: $selectedMessageIndex, index: index)
+                        MessageBubble(
+                            message: message,
+                            selectedIndex: $selectedMessageIndex,
+                            index: index,
+                            promptIsLive: sdk.chat.promptIsLive(
+                                message, in: sdk.chat.currentSessionId
+                            ),
+                            promptSelection: sdk.chat.selection(
+                                for: message.id, in: sdk.chat.currentSessionId
+                            ),
+                            onPromptReply: { cardIndex, label, value, galleryLabel in
+                                Task {
+                                    await sdk.chat.sendButtonReply(
+                                        promptId: message.id,
+                                        cardIndex: cardIndex,
+                                        label: label,
+                                        value: value,
+                                        galleryLabel: galleryLabel
+                                    )
+                                }
+                            }
+                        )
                             .id(index)
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom).combined(with: .opacity),

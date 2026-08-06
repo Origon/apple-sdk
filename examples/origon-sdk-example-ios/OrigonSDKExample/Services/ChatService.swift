@@ -39,6 +39,23 @@ final class ChatService: ObservableObject {
         /// switches so an upload kicked off in session A doesn't vanish
         /// when the user peeks at session B.
         var pendingAttachments: [PendingAttachment] = []
+        /// Which option the user tapped on each interactive prompt, keyed by
+        /// the prompt message's id.
+        ///
+        /// In memory only, and deliberately so: connect persists neither the
+        /// chosen `value` nor the `galleryLabel` on the reply row, so a
+        /// restored transcript cannot say which card was picked. This record
+        /// is the only thing that can — see `selection(for:in:)`, which falls
+        /// back to a label match for history it never saw live.
+        var promptSelections: [String: PromptSelection] = [:]
+    }
+
+    /// The option a user tapped on one prompt. `cardIndex` is `nil` for a
+    /// top-level button row and the card's position for a gallery pick —
+    /// carried because two cards may share a button label.
+    struct PromptSelection: Equatable {
+        var cardIndex: Int?
+        var buttonLabel: String
     }
 
     @Published private(set) var sessionsState: [String: SessionUIState] = [:]
@@ -173,7 +190,15 @@ final class ChatService: ObservableObject {
     /// `messageAdded(provisional)` and `messageUpdated(delivered/failed)`
     /// for every send, so `handleEvent` is the single source of UI
     /// updates.
-    func sendMessage(text: String) async {
+    /// Send a message on the focused session, starting one if there is none.
+    ///
+    /// - Parameters:
+    ///   - value: the picked option's `value` when answering a prompt.
+    ///     connect matches a button reply on `value`, not on the caption.
+    ///   - galleryLabel: the picked card's title, for a gallery pick only.
+    ///     connect matches a gallery reply on the PAIR `(galleryLabel, value)`,
+    ///     because two cards may carry the same option value.
+    func sendMessage(text: String, value: String? = nil, galleryLabel: String? = nil) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Read tiles through the accessor: with no session focused they are
         // still on the draft list, and an attachment-only first message is
@@ -185,7 +210,9 @@ final class ChatService: ObservableObject {
 
         let payload = SendMessagePayload(
             text: trimmed.isEmpty ? nil : trimmed,
-            attachments: completed
+            attachments: completed,
+            value: value,
+            galleryLabel: galleryLabel
         )
         do {
             let id: String
@@ -206,6 +233,79 @@ final class ChatService: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Answer an interactive prompt by tapping one of its options.
+    ///
+    /// Routed through `sendMessage` on purpose: a tap and a typed message
+    /// share the optimistic buffer, the lazy session start and the delivery
+    /// bookkeeping, and a second copy of that machinery would be a second
+    /// place to get it wrong.
+    ///
+    /// `label` becomes the message `text` (what lands in the transcript, and
+    /// connect's fallback match key); `value` is the real match key.
+    func sendButtonReply(
+        promptId: String,
+        cardIndex: Int?,
+        label: String,
+        value: String,
+        galleryLabel: String?
+    ) async {
+        // A prompt can only exist on a session that is already live, so the
+        // focused id is the right key.
+        if let id = currentSessionId {
+            var state = sessionsState[id] ?? SessionUIState()
+            state.promptSelections[promptId] = PromptSelection(
+                cardIndex: cardIndex,
+                buttonLabel: label
+            )
+            sessionsState[id] = state
+        }
+        await sendMessage(text: label, value: value, galleryLabel: galleryLabel)
+    }
+
+    /// Which option is highlighted on `promptId`, if any.
+    ///
+    /// Two mechanisms, because neither covers the other's case. The in-memory
+    /// record is exact but empty after a relaunch; the label match works on a
+    /// restored transcript but can only compare captions — so on a prompt with
+    /// duplicate labels across cards it may highlight the wrong card. connect
+    /// persists nothing that could disambiguate it, so that over-match is
+    /// accepted rather than solved.
+    func selection(for promptId: String, in sessionId: String?) -> PromptSelection? {
+        guard let sessionId, let state = sessionsState[sessionId] else { return nil }
+        if let recorded = state.promptSelections[promptId] { return recorded }
+
+        // Restored history: the visitor's reply is the row after the prompt,
+        // and its text is the label they tapped.
+        guard let promptIndex = state.messages.firstIndex(where: { $0.id == promptId }) else {
+            return nil
+        }
+        let after = state.messages[state.messages.index(after: promptIndex)...]
+        guard let reply = after.first(where: { $0.role == .external }),
+              let text = reply.text, !text.isEmpty
+        else { return nil }
+        return PromptSelection(cardIndex: nil, buttonLabel: text)
+    }
+
+    /// Whether `message`'s options are still answerable.
+    ///
+    /// Deliberately NOT "any later message": connect puts lifecycle rows
+    /// (`queued`/`joined`/`ended`) and paced flow messages on the visitor
+    /// stream, so an agent joining mid-prompt would disable a prompt connect
+    /// still considers open. The discriminator is a later **visitor-authored**
+    /// row, which can only come from this client's own send or from a restored
+    /// transcript — both are in `state.messages`.
+    func promptIsLive(_ message: Message, in sessionId: String?) -> Bool {
+        guard let sessionId, let state = sessionsState[sessionId] else { return false }
+        if state.promptSelections[message.id] != nil { return false }
+        guard let index = state.messages.firstIndex(where: { $0.id == message.id }) else {
+            // Not in this session's transcript — treat as inert rather than
+            // offering a tap we cannot attribute.
+            return false
+        }
+        let after = state.messages[state.messages.index(after: index)...]
+        return !after.contains { $0.role == .external }
     }
 
     /// Notify the peer that the user is typing on the focused session.

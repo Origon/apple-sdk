@@ -5,6 +5,12 @@ struct MessageBubble: View {
     let message: Message
     @Binding var selectedIndex: Int?
     let index: Int
+    /// Interactive-prompt wiring. Defaulted so the call sites that render
+    /// plain transcript rows stay unchanged; only the live chat transcript
+    /// passes these.
+    var promptIsLive: Bool = false
+    var promptSelection: ChatService.PromptSelection?
+    var onPromptReply: ((_ cardIndex: Int?, _ label: String, _ value: String, _ galleryLabel: String?) -> Void)?
 
     @State private var previewOpen = false
     @State private var previewIndex = 0
@@ -15,6 +21,14 @@ struct MessageBubble: View {
 
     private var showTimestamp: Bool {
         selectedIndex == index && message.timestamp != nil
+    }
+
+    /// A gallery row spans the FULL transcript width rather than the inset a
+    /// text bubble sits in — the cards are the content, and a card narrowed
+    /// by the bubble inset reads as clipped. Bubbles keep the inset so a long
+    /// message still looks like a message.
+    private var hasGallery: Bool {
+        !message.gallery.isEmpty
     }
 
     var body: some View {
@@ -88,6 +102,36 @@ struct MessageBubble: View {
                     }
                 }
 
+                // Interactive prompt options, below the text bubble. A prompt
+                // rides `role: system` with NO action, so it reached us on the
+                // bubble branch above — which is what makes "under the text"
+                // the right place rather than an assumption.
+                if !message.buttons.isEmpty {
+                    MessageButtons(
+                        buttons: message.buttons,
+                        isLive: promptIsLive,
+                        selectedLabel: promptSelection?.buttonLabel
+                    ) { button in
+                        handlePromptTap(cardIndex: nil, galleryLabel: nil, button: button)
+                    }
+                    .padding(.top, 2)
+                }
+
+                if !message.gallery.isEmpty {
+                    MessageGallery(
+                        cards: message.gallery,
+                        isLive: promptIsLive,
+                        selection: promptSelection
+                    ) { cardIndex, card, button in
+                        handlePromptTap(
+                            cardIndex: cardIndex,
+                            galleryLabel: card.title,
+                            button: button
+                        )
+                    }
+                    .padding(.top, 2)
+                }
+
                 if message.status == .failed {
                     HStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -112,7 +156,7 @@ struct MessageBubble: View {
                 }
             }
 
-            if !isSelfUser { Spacer(minLength: 60) }
+            if !isSelfUser { Spacer(minLength: hasGallery ? 0 : 60) }
         }
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
         .onTapGesture {
@@ -127,6 +171,24 @@ struct MessageBubble: View {
                 isPresented: $previewOpen
             )
         }
+    }
+
+    /// A `"url"` option opens the link **and** posts the reply, matching the
+    /// web client: the flow still has to walk that option's edge, otherwise
+    /// tapping a link would strand the conversation on a waiter that never
+    /// resolves.
+    private func handlePromptTap(
+        cardIndex: Int?,
+        galleryLabel: String?,
+        button: MessageButton
+    ) {
+        if button.buttonType == "url",
+           let url = URL(string: button.value),
+           UIApplication.shared.canOpenURL(url)
+        {
+            UIApplication.shared.open(url)
+        }
+        onPromptReply?(cardIndex, button.label, button.value, galleryLabel)
     }
 
     private func formatTimestamp(_ iso8601: String) -> String {
