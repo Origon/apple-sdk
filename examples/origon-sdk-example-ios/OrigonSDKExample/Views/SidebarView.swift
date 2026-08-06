@@ -28,25 +28,29 @@ struct SidebarView: View {
             .padding(.top, 4)
             .padding(.bottom, 36)
 
-            // Session list
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(groupedSessions, id: \.title) { group in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(group.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundColor(Origon.textTertiary)
-                                .padding(.horizontal, 12)
-                                .padding(.bottom, 4)
+            // Session list — friendly empty state when there are no sessions.
+            if groupedSessions.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 24) {
+                        ForEach(groupedSessions, id: \.title) { group in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(group.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(Origon.textTertiary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.bottom, 4)
 
-                            ForEach(group.sessions, id: \.sessionId) { session in
-                                sessionRow(session)
+                                ForEach(group.sessions, id: \.sessionId) { session in
+                                    sessionRow(session)
+                                }
                             }
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
 
             Spacer(minLength: 0)
@@ -63,18 +67,51 @@ struct SidebarView: View {
         Button {
             onSessionPicked(session.sessionId)
         } label: {
-            Text(session.subject.isEmpty ? "Untitled" : session.subject)
-                .font(.body)
-                .foregroundColor(Origon.textPrimary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .contentShape(Rectangle())
-                .background(isSelected ? Origon.surface : Color.clear)
-                .cornerRadius(10)
+            HStack(spacing: 8) {
+                Image(session.channel == .voice ? "VoiceChannelIcon" : "ChatChannelIcon")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+                    // Per-channel tone: the voice (wave) glyph reads bolder, the
+                    // chat (bubble) glyph dimmer — at one shared tone the denser
+                    // chat bubble over-powered the wave bars.
+                    .foregroundColor(session.channel == .voice
+                        ? Origon.textSecondary
+                        : Origon.textTertiary.opacity(0.55))
+                    .accessibilityHidden(true)  // decorative; the preview text labels the row
+
+                Text(sessionPreview(session))
+                    .font(.body)
+                    .foregroundColor(Origon.textPrimary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .background(isSelected ? Origon.surface : Color.clear)
+            .cornerRadius(10)
         }
         .buttonStyle(.plain)
+    }
+
+    // Row text: the last message's text when present, else the contact's
+    // name, else the subject, else a neutral placeholder.
+    private func sessionPreview(_ session: SessionSummary) -> String {
+        if let text = session.lastMessage?.text, !text.isEmpty { return text }
+        if let name = session.contact?.name, !name.isEmpty { return name }
+        return session.subject.isEmpty ? "Untitled" : session.subject
+    }
+
+    // Shown in place of the list when there are no sessions yet.
+    private var emptyState: some View {
+        Text("Your past sessions will appear here")
+            .font(.subheadline)
+            .foregroundColor(Origon.textTertiary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Footer
