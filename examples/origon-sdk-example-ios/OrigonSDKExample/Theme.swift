@@ -27,10 +27,11 @@ enum Origon {
     static let textTertiary = Color(.tertiaryLabel)
     static let userBubble = Color.blue
     static let remoteBubble = Color(.systemGray5)
-    // Self-user message bubble: black @ 6% in light mode, white @ 6% in dark
-    // mode. Subtle tint rather than the brand accent, so text on top uses the
-    // adaptive `textPrimary` (not white).
-    static let selfBubble = Color(UIColor { traits in
+    // Peer (agent) message bubble: black @ 6% in light mode, white @ 6% in
+    // dark mode. Subtle tint rather than the brand accent, so text on top uses
+    // the adaptive `textPrimary` (not white). The self bubble uses the brand
+    // `accent`; this neutral tint is the incoming/peer side.
+    static let peerBubble = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(white: 1, alpha: 0.06)
             : UIColor(white: 0, alpha: 0.06)

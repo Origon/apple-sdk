@@ -67,12 +67,12 @@ struct MessageBubble: View {
                 if let text = message.text, !text.isEmpty {
                     Text(text)
                         .font(.body)
-                        .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
+                        .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             BubbleShape()
-                                .fill(isSelfUser ? Origon.selfBubble : Origon.accent)
+                                .fill(isSelfUser ? Origon.accent : Origon.peerBubble)
                         )
                 }
 
@@ -179,13 +179,13 @@ private struct AttachmentRow: View {
                     .overlay(
                         Image(systemName: iconName(for: contentType))
                             .font(.system(size: 14))
-                            .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
+                            .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textSecondary)
                     )
             }
 
             Text(fileName)
                 .font(.subheadline)
-                .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
+                .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -196,14 +196,14 @@ private struct AttachmentRow: View {
             } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 16))
-                    .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
+                    .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textSecondary)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(minWidth: 180, maxWidth: 280, minHeight: 44)
-        .background(isSelfUser ? Origon.selfBubble : Origon.accent)
+        .background(isSelfUser ? Origon.accent : Origon.peerBubble)
         .cornerRadius(10)
     }
 
