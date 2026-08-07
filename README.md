@@ -256,14 +256,16 @@ while let event = client.pollEvent() {
 
 ### Attachments
 
-Chat only. Upload a file, then attach the returned `Attachment` to your
-next message. `uploadAttachment` is `async` with overloads for a
-filesystem path, `Data`, or a `URL` (the `url:` overload manages
-`startAccessingSecurityScopedResource()` for `UIDocumentPicker` URLs):
+Upload a file, then attach the returned `Attachment` to your next
+message. **There is no `sessionId:`** — attachments are scoped to the
+widget the client was created for, so an attachment can be the first
+thing a visitor sends, before any session exists. `uploadAttachment` is
+`async` with overloads for a filesystem path, `Data`, or a `URL` (the
+`url:` overload manages `startAccessingSecurityScopedResource()` for
+`UIDocumentPicker` URLs):
 
 ```swift
 let attachment = try await client.uploadAttachment(
-    sessionId: sessionId,
     url: pickedURL,
     fileName: "photo.jpg"
 ) { progress in
@@ -278,7 +280,7 @@ try client.sendMessage(
 
 // Cancel an in-flight upload (pass the uploadId) or delete a completed
 // one (pass attachment.id) — the SDK works out which.
-try await client.deleteAttachment(sessionId: sessionId, attachmentId: attachment.id)
+try await client.deleteAttachment(attachmentId: attachment.id)
 ```
 
 Uploads are prechecked against the tenant's `attachmentPolicy` (type and
@@ -355,8 +357,8 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `sendMessage(id:payload:)` | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |
 | `notifyTyping(id:)` | Chat — register a keystroke; SDK debounces outbound `/typing` POSTs. |
 | `stopTyping(id:)` | Chat — force outbound typing state to "off" immediately. |
-| `uploadAttachment(sessionId:…)` | Chat — `async`; upload a file (`path:` / `data:` / `url:` overloads) and return the server-issued `Attachment`. Reports progress via `onProgress`. |
-| `deleteAttachment(sessionId:attachmentId:)` | Chat — `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). |
+| `uploadAttachment(path:\|data:\|url:)` | `async`; upload a file (`path:` / `data:` / `url:` overloads) against the client's widget and return the server-issued `Attachment`. No session required. Reports progress via `onProgress`. |
+| `deleteAttachment(attachmentId:)` | `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). No session required. |
 | `activeSessions()` | Snapshot of every active session. |
 | `getSessions()` | `GET /sessions` — list prior sessions for the configured `userId`. |
 | `getSession(id:)` | `GET /session/<id>` — transcript for one session. |

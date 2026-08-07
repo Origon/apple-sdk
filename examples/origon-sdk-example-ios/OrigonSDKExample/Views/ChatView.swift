@@ -85,12 +85,12 @@ struct ChatView: View {
             }
         }
         .onAppear {
-            startSessionIfNeeded()
+            focusSessionIfNeeded()
         }
         .onChange(of: sessionId) { _ in
             hasStartedSession = false
             hasFocusedOnce = false
-            startSessionIfNeeded()
+            focusSessionIfNeeded()
         }
         .onChange(of: sdk.chat.currentSessionId) { _ in
             guard !hasFocusedOnce else { return }
@@ -161,7 +161,28 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(Array(sdk.chat.messages.enumerated()), id: \.offset) { index, message in
-                        MessageBubble(message: message, selectedIndex: $selectedMessageIndex, index: index)
+                        MessageBubble(
+                            message: message,
+                            selectedIndex: $selectedMessageIndex,
+                            index: index,
+                            promptIsLive: sdk.chat.promptIsLive(
+                                message, in: sdk.chat.currentSessionId
+                            ),
+                            promptSelection: sdk.chat.selection(
+                                for: message.id, in: sdk.chat.currentSessionId
+                            ),
+                            onPromptReply: { cardIndex, label, value, galleryLabel in
+                                Task {
+                                    await sdk.chat.sendButtonReply(
+                                        promptId: message.id,
+                                        cardIndex: cardIndex,
+                                        label: label,
+                                        value: value,
+                                        galleryLabel: galleryLabel
+                                    )
+                                }
+                            }
+                        )
                             .id(index)
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom).combined(with: .opacity),
@@ -361,7 +382,7 @@ struct ChatView: View {
         }
     }
 
-    private func startSessionIfNeeded() {
+    private func focusSessionIfNeeded() {
         guard !hasStartedSession else { return }
         hasStartedSession = true
         Task { await sdk.chat.openSession(id: sessionId) }

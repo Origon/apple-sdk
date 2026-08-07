@@ -21,11 +21,12 @@ import OrigonSDK
 ///   `client.sendMessage`. The SDK auto-fires `messageAdded(provisional)`
 ///   and `messageUpdated(delivered/failed)`; the event handler is what
 ///   populates `messages`.
-/// - `uploadFile(...)` lazily opens an SDK chat session on the first
-///   upload when there is none, then drives the upload through the SDK
-///   with live `onProgress` updates. Attachments persist as
-///   `PendingAttachment` rows until either bundled into a `sendMessage`
-///   or removed by the user (which also deletes the server-side blob).
+/// - `uploadFile(...)` drives the upload straight through the SDK with
+///   live `onProgress` updates. The write lane is widget-scoped, so no
+///   session is opened for it — an attachment can be the first thing a
+///   visitor sends. Attachments persist as `PendingAttachment` rows
+///   until either bundled into a `sendMessage` or removed by the user
+///   (which also deletes the server-side blob).
 /// - `endCurrentSession()` ends the focused SDK session and drops its
 ///   UI state. Background sessions are unaffected.
 @MainActor
@@ -38,24 +39,44 @@ final class ChatService: ObservableObject {
         /// switches so an upload kicked off in session A doesn't vanish
         /// when the user peeks at session B.
         var pendingAttachments: [PendingAttachment] = []
+        /// Which option the user tapped on each interactive prompt, keyed by
+        /// the prompt message's id.
+        ///
+        /// In memory only, and deliberately so: connect persists neither the
+        /// chosen `value` nor the `galleryLabel` on the reply row, so a
+        /// restored transcript cannot say which card was picked. This record
+        /// is the only thing that can — see `selection(for:in:)`, which falls
+        /// back to a label match for history it never saw live.
+        var promptSelections: [String: PromptSelection] = [:]
+    }
+
+    /// The option a user tapped on one prompt. `cardIndex` is `nil` for a
+    /// top-level button row and the card's position for a gallery pick —
+    /// carried because two cards may share a button label.
+    struct PromptSelection: Equatable {
+        var cardIndex: Int?
+        var buttonLabel: String
     }
 
     @Published private(set) var sessionsState: [String: SessionUIState] = [:]
     @Published private(set) var currentSessionId: String?
     @Published var error: String?
 
-    /// Pending uploads queued before any chat session exists. Migrated
-    /// into `sessionsState[<new id>].pendingAttachments` exactly once,
-    /// inside `ensureChatSession`, when the lazy session-start resolves.
+    /// Pending uploads queued before any chat session exists. Uploads no
+    /// longer wait on a session, so this list is drained by whichever
+    /// comes first: `ensureChatSession` (the lazy start on the first
+    /// send) or `adoptDrafts(into:)` (the user focusing an existing
+    /// session). Both move the rows into that session's
+    /// `pendingAttachments`.
     @Published private(set) var draftPendingAttachments: [PendingAttachment] = []
 
     private weak var sdk: SDKManager?
     private var cancellables = Set<AnyCancellable>()
 
-    /// In-flight lazy session-start. Racing callers (e.g. user picks two
-    /// files in quick succession with no session yet) all `await` this
-    /// single task so only one `POST /session/start` fires and the
-    /// draft → session migration happens exactly once.
+    /// In-flight lazy session-start. Racing callers (e.g. the user taps
+    /// send twice with no session yet) all `await` this single task so
+    /// only one `POST /session/start` fires and the draft → session
+    /// migration happens exactly once.
     private var sessionStartTask: Task<String, Error>?
 
     /// SDKManager creates this and calls `bind(to:)` once it can pass `self`.
@@ -118,21 +139,22 @@ final class ChatService: ObservableObject {
         }
         if sessionsState[id] != nil {
             currentSessionId = id
+            adoptDrafts(into: id)
             return
         }
         guard let client = sdk?.client else { return }
         do {
-            // Fetch history first, then open the chat channel. Ordering
-            // means any live events arriving after `startSession` find a
-            // pre-populated state to merge into.
+            // View-only open: fetch the history and render it, but do NOT
+            // call `startChat` — that verb exists to open a session WITH the
+            // visitor's first message, and opening one here just to read a
+            // past conversation would attach a participant and start a chat
+            // nobody has spoken in. The session goes live on the first send.
             let history = try await Task.detached {
                 try client.getSession(id: id)
             }.value
-            let response = try await Task.detached {
-                try client.startSession(StartSessionOptions(channel: .chat, sessionId: id))
-            }.value
-            sessionsState[response.sessionId] = SessionUIState(messages: history.history)
-            currentSessionId = response.sessionId
+            sessionsState[id] = SessionUIState(messages: history.history)
+            currentSessionId = id
+            adoptDrafts(into: id)
             // Refresh sidebar so the now-open session shows up.
             try? await sdk?.getSessions()
         } catch {
@@ -140,30 +162,68 @@ final class ChatService: ObservableObject {
         }
     }
 
-    /// Send a text message + any completed attachments on the focused
-    /// session. Lazily opens a fresh SDK chat session on the first send
-    /// when there is none.
+    /// Move any draft tiles onto the session being focused.
+    ///
+    /// The draft list holds rows picked while nothing was open. Uploads no
+    /// longer wait on a session, so nothing drains that list on its own any
+    /// more — and the `pendingAttachments` accessor stops reading it the
+    /// moment a real session is focused. Left alone, a tile picked before
+    /// opening a conversation would vanish from the composer (unremovable,
+    /// its blob stranded on the server) and then silently reappear on
+    /// whichever session happened to be started next. Adopting it here keeps
+    /// it visible and removable in the chat the user is actually looking at.
+    private func adoptDrafts(into id: String) {
+        guard !draftPendingAttachments.isEmpty else { return }
+        sessionsState[id]?.pendingAttachments.append(contentsOf: draftPendingAttachments)
+        draftPendingAttachments = []
+    }
+
+    /// Send a text message + any completed attachments.
+    ///
+    /// With a session already focused this is a plain `sendMessage`. With
+    /// none, the send IS the open: `startChat` carries the visitor's first
+    /// message, so there is no window where a session exists but has said
+    /// nothing (the server gates the flow on visitor content and reaps a
+    /// silent session — see `StartChatOptions`).
     ///
     /// Does not mutate `messages` directly — the SDK fires
     /// `messageAdded(provisional)` and `messageUpdated(delivered/failed)`
     /// for every send, so `handleEvent` is the single source of UI
     /// updates.
-    func sendMessage(text: String) async {
+    /// Send a message on the focused session, starting one if there is none.
+    ///
+    /// - Parameters:
+    ///   - value: the picked option's `value` when answering a prompt.
+    ///     connect matches a button reply on `value`, not on the caption.
+    ///   - galleryLabel: the picked card's title, for a gallery pick only.
+    ///     connect matches a gallery reply on the PAIR `(galleryLabel, value)`,
+    ///     because two cards may carry the same option value.
+    func sendMessage(text: String, value: String? = nil, galleryLabel: String? = nil) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            let id = try await ensureChatSession()
-            let completed = (sessionsState[id]?.pendingAttachments ?? [])
-                .compactMap { $0.status == .completed ? $0.attachment : nil }
-            guard !trimmed.isEmpty || !completed.isEmpty else { return }
-            guard let client = sdk?.client else { return }
+        // Read tiles through the accessor: with no session focused they are
+        // still on the draft list, and an attachment-only first message is
+        // valid.
+        let completed = pendingAttachments
+            .compactMap { $0.status == .completed ? $0.attachment : nil }
+        guard !trimmed.isEmpty || !completed.isEmpty else { return }
+        guard let client = sdk?.client else { return }
 
-            let payload = SendMessagePayload(
-                text: trimmed.isEmpty ? nil : trimmed,
-                attachments: completed
-            )
-            _ = try await Task.detached {
-                try client.sendMessage(id: id, payload: payload)
-            }.value
+        let payload = SendMessagePayload(
+            text: trimmed.isEmpty ? nil : trimmed,
+            attachments: completed,
+            value: value,
+            galleryLabel: galleryLabel
+        )
+        do {
+            let id: String
+            if let existing = currentSessionId {
+                id = existing
+                _ = try await Task.detached {
+                    try client.sendMessage(id: existing, payload: payload)
+                }.value
+            } else {
+                id = try await openAndSend(payload: payload)
+            }
 
             // Completed attachments are now owned by the sent message;
             // any rows still in `.uploading` / `.error` are left alone
@@ -173,6 +233,79 @@ final class ChatService: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Answer an interactive prompt by tapping one of its options.
+    ///
+    /// Routed through `sendMessage` on purpose: a tap and a typed message
+    /// share the optimistic buffer, the lazy session start and the delivery
+    /// bookkeeping, and a second copy of that machinery would be a second
+    /// place to get it wrong.
+    ///
+    /// `label` becomes the message `text` (what lands in the transcript, and
+    /// connect's fallback match key); `value` is the real match key.
+    func sendButtonReply(
+        promptId: String,
+        cardIndex: Int?,
+        label: String,
+        value: String,
+        galleryLabel: String?
+    ) async {
+        // A prompt can only exist on a session that is already live, so the
+        // focused id is the right key.
+        if let id = currentSessionId {
+            var state = sessionsState[id] ?? SessionUIState()
+            state.promptSelections[promptId] = PromptSelection(
+                cardIndex: cardIndex,
+                buttonLabel: label
+            )
+            sessionsState[id] = state
+        }
+        await sendMessage(text: label, value: value, galleryLabel: galleryLabel)
+    }
+
+    /// Which option is highlighted on `promptId`, if any.
+    ///
+    /// Two mechanisms, because neither covers the other's case. The in-memory
+    /// record is exact but empty after a relaunch; the label match works on a
+    /// restored transcript but can only compare captions — so on a prompt with
+    /// duplicate labels across cards it may highlight the wrong card. connect
+    /// persists nothing that could disambiguate it, so that over-match is
+    /// accepted rather than solved.
+    func selection(for promptId: String, in sessionId: String?) -> PromptSelection? {
+        guard let sessionId, let state = sessionsState[sessionId] else { return nil }
+        if let recorded = state.promptSelections[promptId] { return recorded }
+
+        // Restored history: the visitor's reply is the row after the prompt,
+        // and its text is the label they tapped.
+        guard let promptIndex = state.messages.firstIndex(where: { $0.id == promptId }) else {
+            return nil
+        }
+        let after = state.messages[state.messages.index(after: promptIndex)...]
+        guard let reply = after.first(where: { $0.role == .external }),
+              let text = reply.text, !text.isEmpty
+        else { return nil }
+        return PromptSelection(cardIndex: nil, buttonLabel: text)
+    }
+
+    /// Whether `message`'s options are still answerable.
+    ///
+    /// Deliberately NOT "any later message": connect puts lifecycle rows
+    /// (`queued`/`joined`/`ended`) and paced flow messages on the visitor
+    /// stream, so an agent joining mid-prompt would disable a prompt connect
+    /// still considers open. The discriminator is a later **visitor-authored**
+    /// row, which can only come from this client's own send or from a restored
+    /// transcript — both are in `state.messages`.
+    func promptIsLive(_ message: Message, in sessionId: String?) -> Bool {
+        guard let sessionId, let state = sessionsState[sessionId] else { return false }
+        if state.promptSelections[message.id] != nil { return false }
+        guard let index = state.messages.firstIndex(where: { $0.id == message.id }) else {
+            // Not in this session's transcript — treat as inert rather than
+            // offering a tap we cannot attribute.
+            return false
+        }
+        let after = state.messages[state.messages.index(after: index)...]
+        return !after.contains { $0.role == .external }
     }
 
     /// Notify the peer that the user is typing on the focused session.
@@ -230,7 +363,6 @@ final class ChatService: ObservableObject {
         // session's pending list — the row may have started life in
         // the draft and migrated into a session.
         var removed: PendingAttachment?
-        var hostSessionId: String?
         if let i = draftPendingAttachments.firstIndex(where: { $0.id == id }) {
             removed = draftPendingAttachments[i]
             draftPendingAttachments.remove(at: i)
@@ -240,7 +372,6 @@ final class ChatService: ObservableObject {
                     var s = state
                     removed = s.pendingAttachments.remove(at: i)
                     sessionsState[sid] = s
-                    hostSessionId = sid
                     break
                 }
             }
@@ -249,29 +380,23 @@ final class ChatService: ObservableObject {
 
         switch removed.status {
         case .uploading:
-            // In-flight cancel only makes sense once the upload has a
-            // session to run against. While the row is still on the
-            // draft list (no host session yet), `runUpload`'s
-            // pendingExists guard aborts the upload before any wire
-            // work starts — no cancel needed.
-            guard let sid = hostSessionId else { return }
             // The SDK's deleteAttachment is dual-purpose: it matches
             // our local id against its in-flight upload table and
             // tears down the QUIC stream with a RESET. The upload's
             // awaiter throws `.cancelled`, which `runUpload` swallows.
+            // Fires regardless of which list hosted the row — the write
+            // lane is widget-scoped, and a draft-list upload is now the
+            // common case since uploads no longer wait on a session.
             Task.detached {
-                try? await client.deleteAttachment(sessionId: sid, attachmentId: id)
+                try? await client.deleteAttachment(attachmentId: id)
             }
 
         case .completed:
             // Server already has the blob; clean it up with its
             // server-issued id.
-            guard
-                let sid = hostSessionId,
-                let serverId = removed.attachment?.id
-            else { return }
+            guard let serverId = removed.attachment?.id else { return }
             Task.detached {
-                try? await client.deleteAttachment(sessionId: sid, attachmentId: serverId)
+                try? await client.deleteAttachment(attachmentId: serverId)
             }
 
         case .error:
@@ -342,6 +467,14 @@ final class ChatService: ObservableObject {
                 if currentSessionId == sid { currentSessionId = nil }
             }
 
+        case .chatSessionEnded:
+            // Clean end — the agent or flow closed the chat. State is
+            // deliberately KEPT so the user stays on the transcript, and
+            // there is no error toast: this is not a failure. A production
+            // app would also flip the composer read-only and show an
+            // "ended" divider; that is UI work this example leaves out.
+            break
+
         case .sessionUpdated, .connected, .reconnecting, .reconnected,
              .controlUpdated, .peerAttached, .peerDetached, .callError,
              .audioRouteChanged:
@@ -372,19 +505,35 @@ final class ChatService: ObservableObject {
 
     // MARK: - Upload internals
 
-    /// Resolve a chat session id — focused if already open, otherwise
-    /// start one. Concurrent callers join the same in-flight start, so
-    /// at most one `POST /session/start` fires per draft burst and the
-    /// draft → session migration happens exactly once.
-    private func ensureChatSession() async throws -> String {
-        if let id = currentSessionId { return id }
-        if let task = sessionStartTask { return try await task.value }
+    /// Open a chat session by SENDING — `startChat` carries `payload` as the
+    /// visitor's first message and returns the new session id.
+    ///
+    /// This is the only path that opens a chat. Uploads are widget-scoped
+    /// and never open one, and the sidebar's `openSession` is view-only.
+    ///
+    /// A second send arriving while a start is in flight joins that start
+    /// and then sends normally — it must NOT start its own session, and it
+    /// can't join by payload either, since the first message is already
+    /// spoken for.
+    private func openAndSend(payload: SendMessagePayload) async throws -> String {
         guard let client = sdk?.client else { throw OrigonError.notInitialized }
+
+        if let inFlight = sessionStartTask {
+            let id = try await inFlight.value
+            _ = try await Task.detached {
+                try client.sendMessage(id: id, payload: payload)
+            }.value
+            return id
+        }
 
         let task = Task<String, Error> { [weak self] in
             do {
+                // `startChat` returns the session id BEFORE the message goes
+                // out, and a first message that fails to DELIVER does not
+                // throw — it arrives as `messageUpdated(.failed)` so the user
+                // can retry. Only a terminal refusal throws.
                 let response = try await Task.detached {
-                    try client.startSession(StartSessionOptions(channel: .chat, sessionId: nil))
+                    try client.startChat(StartChatOptions(firstMessage: payload))
                 }.value
                 await MainActor.run {
                     guard let self else { return }
@@ -399,8 +548,6 @@ final class ChatService: ObservableObject {
                     self.draftPendingAttachments = []
                     // Only steal focus if the user didn't navigate to a
                     // different session while the start was in flight.
-                    // The new session stays alive in the background
-                    // either way so the upload completes against it.
                     if self.currentSessionId == nil {
                         self.currentSessionId = response.sessionId
                     }
@@ -427,27 +574,16 @@ final class ChatService: ObservableObject {
             }
             return
         }
-        let sid: String
-        do {
-            sid = try await ensureChatSession()
-        } catch {
-            updatePending(localId: localId) {
-                $0.status = .error
-                $0.errorText = "Couldn't start chat session"
-            }
-            return
-        }
-
-        // The user can × the tile while we're waiting for the session
-        // to come up — at that point there's no session id yet so
-        // `removePendingAttachment` couldn't fire a cancel. If the row
-        // is gone by the time we get here, abort before any wire work
-        // starts: no orphan attachment on the server, no wasted bytes.
+        // `uploadFile` appends the row and then ENQUEUES this task, so an ×
+        // tap can run in between. If the row is gone by the time we get
+        // here, abort before any wire work starts — the cancel it fired
+        // landed before the SDK registered its in-flight entry, so it would
+        // have degraded to a DELETE of an id the server never saw, leaving
+        // an orphan blob behind this upload.
         guard pendingExists(localId: localId) else { return }
 
         do {
             let attachment = try await client.uploadAttachment(
-                sessionId: sid,
                 uploadId: localId,
                 data: data,
                 fileName: fileName,

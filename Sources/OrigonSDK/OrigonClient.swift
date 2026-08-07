@@ -7,8 +7,8 @@ import UIKit
 /// The primary interface to the Origon platform on Apple platforms.
 ///
 /// Backed by the `COrigonSDK` XCFramework (statically linked
-/// `libsession.a`). One instance owns one native handle and one tokio
-/// runtime; create at app start, deinit when shutting down.
+/// `libsession.a`). One instance owns one native handle and one smol
+/// executor; create at app start, deinit when shutting down.
 ///
 /// All fallible methods throw ``OrigonError`` with a structured
 /// `kind` / `statusCode` / `code` / `message`.
@@ -197,7 +197,7 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     /// Replace session-level attributes injected as `data.attributes`
-    /// on subsequent `startSession` calls. Pass `nil` to clear.
+    /// on subsequent `startCall` / `startChat` calls. Pass `nil` to clear.
     public func setAttributes(_ attrs: [String: Any]?) throws {
         guard let handle else { throw OrigonError.notInitialized }
         let json = try Self.encodeAttributes(attrs)
@@ -209,36 +209,71 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     // MARK: - Session lifecycle
-
-    /// Open a session and return its ``StartSessionResponse``
-    /// `(sessionId, url, token)`.
+    /// Start a **voice call**. Posts `/session/start` and brings the media
+    /// plane up.
     ///
-    /// **Returning does not mean the media plane is connected.** For a
-    /// `.voice` session the MoQ dial runs in the background after this
-    /// returns: connect success arrives as a `.connected` event and a dial
-    /// failure as a `.disconnected` event (reason `.transportClosed`) on
-    /// the event stream — *not* as a thrown error. Calling
-    /// ``endSession(_:)`` with the returned id while still dialing cancels
-    /// the in-flight dial. A `.chat` session completes its (quick) SSE dial
-    /// before returning and still throws on SSE-dial failure. This call
-    /// throws only for the `/session/start` HTTP failure, a chat SSE-dial
-    /// failure, or a malformed request.
-    public func startSession(_ options: StartSessionOptions) throws -> StartSessionResponse {
+    /// **Returning does not mean the media plane is connected.** The MoQ dial
+    /// runs in the background: connect success arrives as a `.connected`
+    /// event and a dial failure as `.disconnected` (reason
+    /// `.transportClosed`) on the event stream — *not* as a thrown error.
+    /// Calling ``endSession(_:)`` with the returned id while still dialing
+    /// cancels the in-flight dial. Throws only for the `/session/start` HTTP
+    /// failure or a malformed request.
+    public func startCall(_ options: StartCallOptions) throws -> StartSessionResponse {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var resp = SessionStartResponse()
 
         let rc: Int32 = withOptionalCString(options.sessionId) { sidPtr in
             withOptionalCString(options.data) { dataPtr in
-                var opts = SessionStartOptions(
-                    channel: options.channel.toC(),
+                var opts = SessionStartCallOptions(
                     session_id: sidPtr,
                     data_json: dataPtr
                 )
-                return session_client_start_session(handle, &opts, &resp, &err)
+                return session_client_start_call(handle, &opts, &resp, &err)
             }
         }
+        return try Self.consumeStartResponse(rc, &resp, &err)
+    }
 
+    /// Start a **chat**, sending the visitor's first message as part of the
+    /// call.
+    ///
+    /// The first message is required — see ``StartChatOptions`` for why. The
+    /// session id comes back BEFORE the message is sent, so the provisional
+    /// `.messageAdded` event always has a session to belong to.
+    ///
+    /// A first message that fails to DELIVER does not throw: the session is
+    /// live and the failure arrives as `.messageUpdated` with
+    /// `status == .failed`, so the user can retry. Only a TERMINAL refusal
+    /// (the session is already gone) throws — returning normally would leave
+    /// the app rendering a composer on a dead conversation.
+    public func startChat(_ options: StartChatOptions) throws -> StartSessionResponse {
+        guard let handle else { throw OrigonError.notInitialized }
+        let firstJson = try Self.encodePayload(options.firstMessage)
+        var err = SessionError()
+        var resp = SessionStartResponse()
+
+        let rc: Int32 = firstJson.withCString { firstPtr in
+            withOptionalCString(options.sessionId) { sidPtr in
+                withOptionalCString(options.data) { dataPtr in
+                    var opts = SessionStartChatOptions(
+                        first_message_json: firstPtr,
+                        session_id: sidPtr,
+                        data_json: dataPtr
+                    )
+                    return session_client_start_chat(handle, &opts, &resp, &err)
+                }
+            }
+        }
+        return try Self.consumeStartResponse(rc, &resp, &err)
+    }
+
+    private static func consumeStartResponse(
+        _ rc: Int32,
+        _ resp: inout SessionStartResponse,
+        _ err: inout SessionError
+    ) throws -> StartSessionResponse {
         guard rc == 0 else { throw OrigonError.consume(&err) }
         defer { session_start_response_free(&resp) }
 
@@ -255,26 +290,46 @@ public final class OrigonClient: @unchecked Sendable {
         )
     }
 
-    /// Attach to a session whose ``StartSessionResponse`` was obtained
+    /// Attach to a **voice call** whose ``StartSessionResponse`` was obtained
     /// out of band (multi-device handoff, deeplink, persisted session).
     ///
-    /// Like ``startSession(_:)``, a `.voice` session dials MoQ in the
-    /// background — returning here does not mean it is connected; await the
-    /// `.connected` / `.disconnected` event. A `.chat` session completes
-    /// its SSE dial before returning.
-    public func joinSession(_ input: JoinSessionInput) throws {
+    /// Like ``startCall(_:)``, the MoQ dial runs in the background —
+    /// returning here does not mean it is connected; await the `.connected` /
+    /// `.disconnected` event.
+    public func joinCall(_ input: JoinInput) throws {
+        try join(input) { handle, raw, err in
+            session_client_join_call(handle, raw, err)
+        }
+    }
+
+    /// Attach to an existing **chat** obtained out of band — the agent /
+    /// chat-offered path. Completes the attach before returning.
+    ///
+    /// Takes no first message, unlike ``startChat(_:)``: joining is entering
+    /// a room whose first-message gate is ALREADY released — the visitor has
+    /// spoken, which is why this participant is being offered the
+    /// conversation — so there is no deadline left to race.
+    public func joinChat(_ input: JoinInput) throws {
+        try join(input) { handle, raw, err in
+            session_client_join_chat(handle, raw, err)
+        }
+    }
+
+    private func join(
+        _ input: JoinInput,
+        _ call: (OpaquePointer, UnsafePointer<SessionJoinInput>, UnsafeMutablePointer<SessionError>) -> Int32
+    ) throws {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         let rc: Int32 = input.sessionId.withCString { sidPtr in
             input.url.withCString { urlPtr in
                 input.token.withCString { tokPtr in
-                    var raw = SessionJoinSessionInput(
-                        channel: input.channel.toC(),
+                    var raw = SessionJoinInput(
                         session_id: sidPtr,
                         url: urlPtr,
                         token: tokPtr
                     )
-                    return session_client_join_session(handle, &raw, &err)
+                    return call(handle, &raw, &err)
                 }
             }
         }
@@ -405,7 +460,7 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Chat-only — send a text / HTML message on the named session.
     ///
-    /// Requires an active chat session for `id` (call ``startSession``
+    /// Requires an active chat session for `id` (call ``startChat``
     /// first). The SDK fires ``ClientEvent/messageAdded(sessionId:message:)``
     /// (provisional, `status == .sending`) before the wire round-trip
     /// and ``ClientEvent/messageUpdated(sessionId:id:message:)`` (delivered
@@ -469,19 +524,21 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Attachments
 
-    /// Chat-only — stream a file at `path` to the named chat session
-    /// and return the server-issued ``Attachment``.
+    /// Stream a file at `path` to the WIDGET this client was created
+    /// for and return the server-issued ``Attachment``.
+    ///
+    /// There is no `sessionId` and no session prerequisite — an
+    /// attachment can be the first thing a visitor sends.
     ///
     /// For security-scoped `URL`s from `UIDocumentPicker` use the
     /// `url:` overload; for in-memory `Data` use the `data:` overload.
     /// Pass `uploadId` (default: fresh UUID) and hand the same value to
-    /// ``deleteAttachment(sessionId:attachmentId:)`` to cancel
-    /// in-flight. `onProgress` is invoked on `@MainActor`.
+    /// ``deleteAttachment(attachmentId:)`` to cancel in-flight.
+    /// `onProgress` is invoked on `@MainActor`.
     ///
     /// See `client-sdk/session/docs/contract.md#attachment-flow` for
     /// MIME detection, policy prechecks, and error code semantics.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         path: String,
         fileName: String,
@@ -521,7 +578,6 @@ public final class OrigonClient: @unchecked Sendable {
             let attachment = try await Task.detached {
                 try Self.invokeUploadAttachment(
                     handle: handleRef,
-                    sessionId: sessionId,
                     uploadId: uploadId,
                     path: path,
                     fileName: fileName,
@@ -545,7 +601,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// `NSTemporaryDirectory()` and delegates to the path-based
     /// overload. Temp file is removed on every exit path.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         data: Data,
         fileName: String,
@@ -559,7 +614,6 @@ public final class OrigonClient: @unchecked Sendable {
         try data.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         return try await uploadAttachment(
-            sessionId: sessionId,
             uploadId: uploadId,
             path: tempURL.path,
             fileName: fileName,
@@ -571,7 +625,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// `startAccessingSecurityScopedResource()` automatically for
     /// `UIDocumentPicker`-style URLs.
     public func uploadAttachment(
-        sessionId: String,
         uploadId: String = UUID().uuidString,
         url: URL,
         fileName: String? = nil,
@@ -583,7 +636,6 @@ public final class OrigonClient: @unchecked Sendable {
         }
         let resolvedName = fileName ?? url.lastPathComponent
         return try await uploadAttachment(
-            sessionId: sessionId,
             uploadId: uploadId,
             path: url.path,
             fileName: resolvedName,
@@ -591,19 +643,17 @@ public final class OrigonClient: @unchecked Sendable {
         )
     }
 
-    /// Chat-only — dual-purpose: cancel an in-flight upload (when
-    /// `attachmentId` matches an active `uploadId`) or `DELETE` a
-    /// completed attachment by server id. See
-    /// `client-sdk/session/docs/contract.md#cancellation`.
-    public func deleteAttachment(sessionId: String, attachmentId: String) async throws {
+    /// Dual-purpose: cancel an in-flight upload (when `attachmentId`
+    /// matches an active `uploadId`) or `DELETE` a completed attachment
+    /// by server id. Session-less like ``uploadAttachment(uploadId:path:fileName:onProgress:)``.
+    /// See `client-sdk/session/docs/contract.md#cancellation`.
+    public func deleteAttachment(attachmentId: String) async throws {
         guard let handle else { throw OrigonError.notInitialized }
         let handleRef = handle
         try await Task.detached {
             var err = SessionError()
-            let rc = sessionId.withCString { sidPtr in
-                attachmentId.withCString { aidPtr in
-                    session_client_delete_attachment(handleRef, sidPtr, aidPtr, &err)
-                }
+            let rc = attachmentId.withCString { aidPtr in
+                session_client_delete_attachment(handleRef, aidPtr, &err)
             }
             if rc != 0 { throw OrigonError.consume(&err) }
         }.value
@@ -612,7 +662,6 @@ public final class OrigonClient: @unchecked Sendable {
     /// Blocking FFI call, intended for use from a detached task.
     private static func invokeUploadAttachment(
         handle: OpaquePointer,
-        sessionId: String,
         uploadId: String,
         path: String,
         fileName: String,
@@ -621,22 +670,19 @@ public final class OrigonClient: @unchecked Sendable {
     ) throws -> Attachment {
         var err = SessionError()
         var outJson: UnsafeMutablePointer<CChar>?
-        let rc: Int32 = sessionId.withCString { sidPtr in
-            uploadId.withCString { uidPtr in
-                path.withCString { pathPtr in
-                    fileName.withCString { namePtr in
-                        session_client_upload_attachment(
-                            handle,
-                            sidPtr,
-                            uidPtr,
-                            pathPtr,
-                            namePtr,
-                            callback,
-                            ctx,
-                            &outJson,
-                            &err
-                        )
-                    }
+        let rc: Int32 = uploadId.withCString { uidPtr in
+            path.withCString { pathPtr in
+                fileName.withCString { namePtr in
+                    session_client_upload_attachment(
+                        handle,
+                        uidPtr,
+                        pathPtr,
+                        namePtr,
+                        callback,
+                        ctx,
+                        &outJson,
+                        &err
+                    )
                 }
             }
         }
@@ -702,6 +748,35 @@ public final class OrigonClient: @unchecked Sendable {
         return try? JSONDecoder().decode(Message.self, from: data)
     }
 
+    /// Wire shape of the `chatSessionEnded` payload, which rides the FFI's
+    /// `message_json` slot as `{reason, acw?}` (same field the message
+    /// events use). `acw` is present only on an agent participant's stream.
+    private struct SessionEndedPayload: Decodable {
+        let reason: String
+        let acw: Acw?
+
+        private enum CodingKeys: String, CodingKey { case reason, acw }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            self.acw = try c.decodeIfPresent(Acw.self, forKey: .acw)
+        }
+    }
+
+    /// Decode the `chatSessionEnded` payload from `message_json`. A missing
+    /// or malformed payload degrades to an empty reason with no ACW — the
+    /// clean-end signal itself (the event kind) is what matters.
+    private static func decodeSessionEnded(_ cstr: UnsafeMutablePointer<CChar>?) -> (reason: String, acw: Acw?) {
+        guard let cstr else { return ("", nil) }
+        let json = String(cString: cstr)
+        guard
+            let data = json.data(using: .utf8),
+            let payload = try? JSONDecoder().decode(SessionEndedPayload.self, from: data)
+        else { return ("", nil) }
+        return (payload.reason, payload.acw)
+    }
+
     private func mapEvent(_ ev: SessionEvent) -> ClientEvent? {
         guard let sidPtr = ev.session_id else { return nil }
         let sid = String(cString: sidPtr)
@@ -763,6 +838,10 @@ public final class OrigonClient: @unchecked Sendable {
             let route = AudioOutputRoute(rawValue: ev.audio_route) ?? .automatic
             return .audioRouteChanged(sessionId: sid, route: route)
 
+        case SESSION_EVENT_CHAT_SESSION_ENDED:
+            let ended = Self.decodeSessionEnded(ev.message_json)
+            return .chatSessionEnded(sessionId: sid, reason: ended.reason, acw: ended.acw)
+
         default:
             return nil
         }
@@ -793,17 +872,12 @@ private func withOptionalCString<R>(
     }
 }
 
+// `Channel` no longer crosses the C boundary as an integer: the split into
+// startCall/startChat + joinCall/joinChat removed the runtime discriminator
+// every signature used to carry, so `SESSION_CHANNEL_*` is gone from the
+// bridge header. The enum survives only where the SERVER names a channel in
+// a JSON payload — hence `fromWire` below and no `toC` / `fromC`.
 extension Channel {
-    func toC() -> Int32 {
-        switch self {
-        case .chat: return SESSION_CHANNEL_CHAT
-        case .voice: return SESSION_CHANNEL_VOICE
-        }
-    }
-
-    static func fromC(_ c: Int32) -> Channel {
-        c == SESSION_CHANNEL_VOICE ? .voice : .chat
-    }
 
     static func fromWire(_ s: String) -> Channel? {
         switch s {

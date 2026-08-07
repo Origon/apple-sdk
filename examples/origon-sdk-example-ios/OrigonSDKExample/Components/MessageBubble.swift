@@ -5,6 +5,12 @@ struct MessageBubble: View {
     let message: Message
     @Binding var selectedIndex: Int?
     let index: Int
+    /// Interactive-prompt wiring. Defaulted so the call sites that render
+    /// plain transcript rows stay unchanged; only the live chat transcript
+    /// passes these.
+    var promptIsLive: Bool = false
+    var promptSelection: ChatService.PromptSelection?
+    var onPromptReply: ((_ cardIndex: Int?, _ label: String, _ value: String, _ galleryLabel: String?) -> Void)?
 
     @State private var previewOpen = false
     @State private var previewIndex = 0
@@ -17,7 +23,57 @@ struct MessageBubble: View {
         selectedIndex == index && message.timestamp != nil
     }
 
+    /// A gallery row spans the FULL transcript width rather than the inset a
+    /// text bubble sits in — the cards are the content, and a card narrowed
+    /// by the bubble inset reads as clipped. Bubbles keep the inset so a long
+    /// message still looks like a message.
+    private var hasGallery: Bool {
+        !message.gallery.isEmpty
+    }
+
     var body: some View {
+        // A lifecycle system row (action present: queued / joined / ended)
+        // renders as a centered divider; a `.system` row WITHOUT an action is
+        // a connect flow-bot message and keeps bubble rendering. The
+        // discriminator is **action-presence, not role** — branching on
+        // `role == .system` would silently swallow every flow-bot message.
+        // Vocabulary is connect's; see `Message.action` in the SDK.
+        if let action = message.action, !action.isEmpty {
+            systemDivider
+        } else {
+            bubbleBody
+        }
+    }
+
+    /// Centered divider for a lifecycle system row. The label is connect's
+    /// server-formatted `text` — "Bo has joined", "Conversation has ended",
+    /// "You're in <queue> queue" — rendered VERBATIM. connect owns the
+    /// phrasing and pins the actor into `text`, and passes `userId`/`userName`
+    /// as EMPTY strings for `queued`/`ended`, so a client that composed its own
+    /// wording from `userName` would render nothing at all.
+    private var systemDivider: some View {
+        HStack(spacing: 10) {
+            dividerLine
+            Text(message.text ?? "")
+                .font(.caption)
+                .foregroundColor(Origon.textTertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+            dividerLine
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(Origon.border)
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+    }
+
+    private var bubbleBody: some View {
         HStack {
             if isSelfUser { Spacer(minLength: 60) }
 
@@ -25,12 +81,12 @@ struct MessageBubble: View {
                 if let text = message.text, !text.isEmpty {
                     Text(text)
                         .font(.body)
-                        .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
+                        .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             BubbleShape()
-                                .fill(isSelfUser ? Origon.selfBubble : Origon.accent)
+                                .fill(isSelfUser ? Origon.accent : Origon.peerBubble)
                         )
                 }
 
@@ -44,6 +100,36 @@ struct MessageBubble: View {
                                 }
                         }
                     }
+                }
+
+                // Interactive prompt options, below the text bubble. A prompt
+                // rides `role: system` with NO action, so it reached us on the
+                // bubble branch above — which is what makes "under the text"
+                // the right place rather than an assumption.
+                if !message.buttons.isEmpty {
+                    MessageButtons(
+                        buttons: message.buttons,
+                        isLive: promptIsLive,
+                        selectedLabel: promptSelection?.buttonLabel
+                    ) { button in
+                        handlePromptTap(cardIndex: nil, galleryLabel: nil, button: button)
+                    }
+                    .padding(.top, 2)
+                }
+
+                if !message.gallery.isEmpty {
+                    MessageGallery(
+                        cards: message.gallery,
+                        isLive: promptIsLive,
+                        selection: promptSelection
+                    ) { cardIndex, card, button in
+                        handlePromptTap(
+                            cardIndex: cardIndex,
+                            galleryLabel: card.title,
+                            button: button
+                        )
+                    }
+                    .padding(.top, 2)
                 }
 
                 if message.status == .failed {
@@ -70,7 +156,7 @@ struct MessageBubble: View {
                 }
             }
 
-            if !isSelfUser { Spacer(minLength: 60) }
+            if !isSelfUser { Spacer(minLength: hasGallery ? 0 : 60) }
         }
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
         .onTapGesture {
@@ -85,6 +171,24 @@ struct MessageBubble: View {
                 isPresented: $previewOpen
             )
         }
+    }
+
+    /// A `"url"` option opens the link **and** posts the reply, matching the
+    /// web client: the flow still has to walk that option's edge, otherwise
+    /// tapping a link would strand the conversation on a waiter that never
+    /// resolves.
+    private func handlePromptTap(
+        cardIndex: Int?,
+        galleryLabel: String?,
+        button: MessageButton
+    ) {
+        if button.buttonType == "url",
+           let url = URL(string: button.value),
+           UIApplication.shared.canOpenURL(url)
+        {
+            UIApplication.shared.open(url)
+        }
+        onPromptReply?(cardIndex, button.label, button.value, galleryLabel)
     }
 
     private func formatTimestamp(_ iso8601: String) -> String {
@@ -137,13 +241,13 @@ private struct AttachmentRow: View {
                     .overlay(
                         Image(systemName: iconName(for: contentType))
                             .font(.system(size: 14))
-                            .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
+                            .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textSecondary)
                     )
             }
 
             Text(fileName)
                 .font(.subheadline)
-                .foregroundColor(isSelfUser ? Origon.textPrimary : Origon.accentForeground)
+                .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -154,14 +258,14 @@ private struct AttachmentRow: View {
             } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 16))
-                    .foregroundColor(isSelfUser ? Origon.textSecondary : Origon.accentForeground)
+                    .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textSecondary)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(minWidth: 180, maxWidth: 280, minHeight: 44)
-        .background(isSelfUser ? Origon.selfBubble : Origon.accent)
+        .background(isSelfUser ? Origon.accent : Origon.peerBubble)
         .cornerRadius(10)
     }
 

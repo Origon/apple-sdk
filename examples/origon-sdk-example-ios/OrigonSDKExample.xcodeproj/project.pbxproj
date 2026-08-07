@@ -24,6 +24,8 @@
 		7F282191D098108AC0ADFCB3 /* OrigonSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 00A08C26CD60E0DE7F92C052 /* OrigonSDK */; };
 		843B832E379711014ABFBCB3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6B517BD7B7AB496371341EEB /* Assets.xcassets */; };
 		A0ED665A884E256660F0B881 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A89C7D8A528CE098AE88A52A /* MessageBubble.swift */; };
+		B1A2C3D4E5F60718293A4B5C /* MessageButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */; };
+		B1A2C3D4E5F60718293A4B5E /* MessageGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */; };
 		A1F8C7AE01FD40C9B6379A4D /* TypingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948866B17BAB9F6BC258F114 /* TypingIndicator.swift */; };
 		A25CF49B2193250599F8B7DF /* ShakeEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = C596C883DE49A505DAAE2B7A /* ShakeEffect.swift */; };
 		A7F3FC355FBD0AF08829A71D /* ImagePickers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4FD1D417AAF1831481A6537 /* ImagePickers.swift */; };
@@ -50,13 +52,15 @@
 		67549FFD7794AEB5D310656A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		67AA10FDB516827C21A013C0 /* OrigonSDKExampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrigonSDKExampleApp.swift; sourceTree = "<group>"; };
 		6B517BD7B7AB496371341EEB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OrigonSDKExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrigonSDKExample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		948866B17BAB9F6BC258F114 /* TypingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingIndicator.swift; sourceTree = "<group>"; };
 		95D0F69486DF4BFC82909CA9 /* EndpointView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointView.swift; sourceTree = "<group>"; };
 		A1365C2F9A706A56EAB6B353 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A20FF1140500543E0588B99C /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A4FD1D417AAF1831481A6537 /* ImagePickers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickers.swift; sourceTree = "<group>"; };
 		A89C7D8A528CE098AE88A52A /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageButtons.swift; sourceTree = "<group>"; };
+		B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageGallery.swift; sourceTree = "<group>"; };
 		A9D4DFBD3C28444716A94738 /* RootChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootChatView.swift; sourceTree = "<group>"; };
 		C596C883DE49A505DAAE2B7A /* ShakeEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShakeEffect.swift; sourceTree = "<group>"; };
 		C75CA11CB74A69A691483481 /* CallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallService.swift; sourceTree = "<group>"; };
@@ -82,6 +86,8 @@
 				5640C2D19354E445F30C2C4D /* EdgePanGesture.swift */,
 				3B6E58B73256CEE3A47A56C9 /* Haptics.swift */,
 				A89C7D8A528CE098AE88A52A /* MessageBubble.swift */,
+				B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */,
+				B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */,
 				64B3F15EF88FA5450F95EDC0 /* OrigonInput.swift */,
 				C596C883DE49A505DAAE2B7A /* ShakeEffect.swift */,
 				4282F6C5E4D228F7FA2FBD5F /* SwipeBack.swift */,
@@ -234,6 +240,8 @@
 				2F1B0ABDA4EB04682C2EE71C /* Haptics.swift in Sources */,
 				A7F3FC355FBD0AF08829A71D /* ImagePickers.swift in Sources */,
 				A0ED665A884E256660F0B881 /* MessageBubble.swift in Sources */,
+				B1A2C3D4E5F60718293A4B5C /* MessageButtons.swift in Sources */,
+				B1A2C3D4E5F60718293A4B5E /* MessageGallery.swift in Sources */,
 				E23C359ECF5AA8D2C3332EB0 /* Models.swift in Sources */,
 				CEC215E84242EC8C4D0E7D44 /* OrigonInput.swift in Sources */,
 				2D4AC90BAE17FA9D3F01A23C /* OrigonSDKExampleApp.swift in Sources */,
@@ -434,7 +442,7 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Origon/apple-sdk";
 			requirement = {
-				kind = upToNextMinorVersion;
+				kind = upToNextMajorVersion;
 				minimumVersion = 0.1.0;
 			};
 		};

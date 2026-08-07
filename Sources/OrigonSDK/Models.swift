@@ -91,9 +91,8 @@ public struct ClientConfig: Sendable {
     }
 }
 
-/// Options for `OrigonClient.startSession`.
-public struct StartSessionOptions: Sendable {
-    public let channel: Channel
+/// Options for `OrigonClient.startCall`.
+public struct StartCallOptions: Sendable {
     /// Existing session id to resume; `nil` for a new session.
     public let sessionId: String?
     /// Optional consumer-defined raw JSON forwarded as `data` on the wire.
@@ -101,8 +100,7 @@ public struct StartSessionOptions: Sendable {
 
     /// Raw-JSON initializer. Use this when `data` is already a JSON
     /// string (or `nil` to omit it).
-    public init(channel: Channel, sessionId: String? = nil, data: String? = nil) {
-        self.channel = channel
+    public init(sessionId: String? = nil, data: String? = nil) {
         self.sessionId = sessionId
         self.data = data
     }
@@ -111,12 +109,7 @@ public struct StartSessionOptions: Sendable {
     /// (e.g. `[String: String]` or a typed struct) and serializes it
     /// to JSON before forwarding. If encoding fails, `data` is set to
     /// `nil` — the call still proceeds, just without the optional payload.
-    public init<T: Encodable>(
-        channel: Channel,
-        sessionId: String? = nil,
-        data: T
-    ) {
-        self.channel = channel
+    public init<T: Encodable>(sessionId: String? = nil, data: T) {
         self.sessionId = sessionId
         if let bytes = try? JSONEncoder().encode(data) {
             self.data = String(data: bytes, encoding: .utf8)
@@ -126,7 +119,50 @@ public struct StartSessionOptions: Sendable {
     }
 }
 
-/// Response from `OrigonClient.startSession`.
+/// Options for `OrigonClient.startChat`.
+///
+/// `firstMessage` is REQUIRED, and that is the whole point of the split from
+/// the old `startSession`. The server runs a two-stage gate on every chat:
+/// the flow does not start until the visitor has actually said something, and
+/// a session that stays silent past the deadline is reaped. An API that
+/// opened a session and then waited for a human to type was racing that
+/// deadline; carrying the message here makes the race unreachable.
+///
+/// Attachment-only is valid — the gate fires on ANY visitor content.
+public struct StartChatOptions: Sendable {
+    /// The visitor's first message. Required.
+    public let firstMessage: SendMessagePayload
+    /// Existing session id to resume; `nil` for a new session.
+    public let sessionId: String?
+    /// Optional consumer-defined raw JSON forwarded as `data` on the wire.
+    public let data: String?
+
+    public init(
+        firstMessage: SendMessagePayload,
+        sessionId: String? = nil,
+        data: String? = nil
+    ) {
+        self.firstMessage = firstMessage
+        self.sessionId = sessionId
+        self.data = data
+    }
+
+    public init<T: Encodable>(
+        firstMessage: SendMessagePayload,
+        sessionId: String? = nil,
+        data: T
+    ) {
+        self.firstMessage = firstMessage
+        self.sessionId = sessionId
+        if let bytes = try? JSONEncoder().encode(data) {
+            self.data = String(data: bytes, encoding: .utf8)
+        } else {
+            self.data = nil
+        }
+    }
+}
+
+/// Response from `OrigonClient.startCall` / `startChat`.
 public struct StartSessionResponse: Sendable {
     public let sessionId: String
     public let url: String
@@ -140,16 +176,15 @@ public struct StartSessionResponse: Sendable {
     }
 }
 
-/// Input for `OrigonClient.joinSession` — a previously-obtained
-/// `StartSessionResponse` plus the channel.
-public struct JoinSessionInput: Sendable {
-    public let channel: Channel
+/// Input for `OrigonClient.joinCall` / `OrigonClient.joinChat` — a
+/// previously-obtained `StartSessionResponse`. No channel: the method
+/// carries it.
+public struct JoinInput: Sendable {
     public let sessionId: String
     public let url: String
     public let token: String
 
-    public init(channel: Channel, sessionId: String, url: String, token: String) {
-        self.channel = channel
+    public init(sessionId: String, url: String, token: String) {
         self.sessionId = sessionId
         self.url = url
         self.token = token
@@ -300,6 +335,79 @@ public struct UploadProgress: Codable, Sendable, Equatable {
 /// the wire round-trip. The server-issued `id` lands on the follow-up
 /// `MessageUpdated`. The stable lookup key during the sending phase is
 /// `localId`; once delivered, both `id` and `localId` are populated.
+/// One option on an interactive flow prompt — `Message.buttons`, or a
+/// gallery card's own button stack.
+///
+/// The visitor answers by sending `SendMessagePayload.value` set to this
+/// option's `value`. The server matches on **`value`**, never on `label`.
+public struct MessageButton: Codable, Sendable, Equatable {
+    /// The caption to render. Wire key `label` on this lane — the platform
+    /// GraphQL read spells the same field `text`, so shapes from that
+    /// source are not interchangeable with these.
+    public let label: String
+    /// The match key sent back in `SendMessagePayload.value`.
+    public let value: String
+    /// Authored kind — `"text"` / `"postback"` / `"url"`. A free string,
+    /// not an enum: an unknown kind must degrade, not fail to decode.
+    public let buttonType: String
+
+    /// `buttonType` rides the wire key **`type`**. Without this mapping it
+    /// would encode as `buttonType` and decode to empty, silently turning
+    /// every URL button into a plain postback.
+    private enum CodingKeys: String, CodingKey {
+        case label
+        case value
+        case buttonType = "type"
+    }
+
+    public init(label: String = "", value: String = "", buttonType: String = "") {
+        self.label = label
+        self.value = value
+        self.buttonType = buttonType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        self.value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        self.buttonType = try c.decodeIfPresent(String.self, forKey: .buttonType) ?? ""
+    }
+}
+
+/// One card in a `Message.gallery` carousel.
+public struct MessageCard: Codable, Sendable, Equatable {
+    /// Card heading. Doubles as the gallery match key — a reply sends it as
+    /// `SendMessagePayload.galleryLabel`.
+    public let title: String
+    public let description: String
+    /// **Optional, and legitimately so** — the server emits `null` for a
+    /// card authored without an image. Unwrap it before rendering; a card
+    /// with no image is valid, not malformed.
+    public let image: Attachment?
+    /// This card's own options, same shape as the top-level array.
+    public let buttons: [MessageButton]
+
+    public init(
+        title: String = "",
+        description: String = "",
+        image: Attachment? = nil,
+        buttons: [MessageButton] = []
+    ) {
+        self.title = title
+        self.description = description
+        self.image = image
+        self.buttons = buttons
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        self.description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        self.image = try c.decodeIfPresent(Attachment.self, forKey: .image)
+        self.buttons = try c.decodeIfPresent([MessageButton].self, forKey: .buttons) ?? []
+    }
+}
+
 public struct Message: Codable, Sendable, Equatable {
     public let role: MessageRole
     public let id: String
@@ -309,7 +417,23 @@ public struct Message: Codable, Sendable, Equatable {
     public let timestamp: String?
     public let userId: String?
     public let userName: String?
+    /// Lifecycle action for a `role: .system` row: `"queued"` | `"joined"`
+    /// | `"ended"`. Set by connect on lifecycle system messages; absent on
+    /// ordinary messages and on flow-bot `.system` messages (which keep
+    /// bubble rendering — the divider discriminator is action-presence, not
+    /// role). The label is connect's server-formatted `text` ("Bo has
+    /// joined", "Conversation has ended", the queue line), rendered verbatim.
+    /// Mirrors the SDK `Message.action` passthrough (wire key `action`).
+    public let action: String?
     public let attachments: [Attachment]
+    /// Interactive prompt options on a flow-authored `.system` row. Empty
+    /// on every ordinary message — a non-empty array is what makes this
+    /// message a prompt. Note a prompt carries NO `action`, so it must stay
+    /// on the bubble branch, not the lifecycle-divider branch.
+    public let buttons: [MessageButton]
+    /// Gallery-card carousel on a flow-authored `.system` row — the
+    /// card-shaped sibling of `buttons`. Empty on ordinary messages.
+    public let gallery: [MessageCard]
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
@@ -323,7 +447,10 @@ public struct Message: Codable, Sendable, Equatable {
         timestamp: String? = nil,
         userId: String? = nil,
         userName: String? = nil,
+        action: String? = nil,
         attachments: [Attachment] = [],
+        buttons: [MessageButton] = [],
+        gallery: [MessageCard] = [],
         errorText: String? = nil,
         status: MessageStatus = .delivered,
         state: MessageState = .completed
@@ -336,7 +463,10 @@ public struct Message: Codable, Sendable, Equatable {
         self.timestamp = timestamp
         self.userId = userId
         self.userName = userName
+        self.action = action
         self.attachments = attachments
+        self.buttons = buttons
+        self.gallery = gallery
         self.errorText = errorText
         self.status = status
         self.state = state
@@ -352,7 +482,10 @@ public struct Message: Codable, Sendable, Equatable {
         self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
         self.userId = try c.decodeIfPresent(String.self, forKey: .userId)
         self.userName = try c.decodeIfPresent(String.self, forKey: .userName)
+        self.action = try c.decodeIfPresent(String.self, forKey: .action)
         self.attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        self.buttons = try c.decodeIfPresent([MessageButton].self, forKey: .buttons) ?? []
+        self.gallery = try c.decodeIfPresent([MessageCard].self, forKey: .gallery) ?? []
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
@@ -365,11 +498,32 @@ public struct SendMessagePayload: Codable, Sendable {
     public let text: String?
     public let html: String?
     public let attachments: [Attachment]
+    /// The chosen `MessageButton.value` when this send answers an
+    /// interactive prompt. The server matches a button on this, falling
+    /// back to `text` — so `text` must ALSO be set (to the option's label):
+    /// a body with no `text`/`html`/`attachments` is refused with a 400
+    /// before the flow ever sees it.
+    public let value: String?
+    /// The picked `MessageCard.title` when answering a gallery prompt. The
+    /// server matches a gallery pick on the PAIR `(galleryLabel, value)`,
+    /// which is what disambiguates two cards sharing a button value. Leave
+    /// nil for a plain button reply.
+    public let galleryLabel: String?
 
-    public init(text: String? = nil, html: String? = nil, attachments: [Attachment] = []) {
+    /// Both prompt keys are `Optional`, so Swift's synthesised encoder
+    /// omits them when nil — an ordinary message carries neither key.
+    public init(
+        text: String? = nil,
+        html: String? = nil,
+        attachments: [Attachment] = [],
+        value: String? = nil,
+        galleryLabel: String? = nil
+    ) {
         self.text = text
         self.html = html
         self.attachments = attachments
+        self.value = value
+        self.galleryLabel = galleryLabel
     }
 }
 
@@ -456,6 +610,52 @@ public enum DisconnectReason: Sendable, Equatable {
     case transportClosed(detail: String?)
 }
 
+// MARK: - After-call work
+
+/// After-Call-Work offer carried on a chat ``ClientEvent/chatSessionEnded``
+/// event for an **agent** participant (the wrap-up window). Absent for the
+/// visitor / widget side, which receives `reason` alone. Mirrors connect's
+/// chat `sessionEnded.acw` block one-for-one.
+///
+/// Producer: `platform/connect` chat SSE encoder
+/// (`services/http/chat/sse.rs`, `ServerEvent::SessionEnded`).
+public struct Acw: Codable, Sendable, Equatable {
+    /// Always `true` when the block is present — its presence is the signal.
+    public let enabled: Bool
+    /// Wrap-up window in seconds. `0` ⇒ open-ended server-side.
+    public let duration: UInt64
+    /// The agent cannot finish wrap-up without a disposition. Wire key is
+    /// `enforce` (not `enforced`).
+    public let enforce: Bool
+    /// RFC3339 instant the agent entered ACW.
+    public let startedAt: String?
+    /// The team's disposition tags — the pickable wrap-up chips.
+    public let dispositions: [String]
+
+    public init(
+        enabled: Bool = false,
+        duration: UInt64 = 0,
+        enforce: Bool = false,
+        startedAt: String? = nil,
+        dispositions: [String] = []
+    ) {
+        self.enabled = enabled
+        self.duration = duration
+        self.enforce = enforce
+        self.startedAt = startedAt
+        self.dispositions = dispositions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        self.duration = try c.decodeIfPresent(UInt64.self, forKey: .duration) ?? 0
+        self.enforce = try c.decodeIfPresent(Bool.self, forKey: .enforce) ?? false
+        self.startedAt = try c.decodeIfPresent(String.self, forKey: .startedAt)
+        self.dispositions = try c.decodeIfPresent([String].self, forKey: .dispositions) ?? []
+    }
+}
+
 // MARK: - Events
 
 /// Async event from a session. All variants carry `sessionId` so the
@@ -487,6 +687,13 @@ public enum ClientEvent: Sendable {
     /// an OS-driven change (e.g. a headset plugged in mid-call). Drive a
     /// speaker toggle from `route == .speaker`.
     case audioRouteChanged(sessionId: String, route: AudioOutputRoute)
+    /// A chat session ended cleanly — the agent or flow explicitly closed it.
+    /// Distinct from ``disconnected(sessionId:reason:)``: the SDK emits this
+    /// and then stops the chat actor WITHOUT a trailing `.disconnected`, so a
+    /// consumer renders a clean end (no "disconnected" toast). `reason` is
+    /// connect's end reason; `acw` (after-call-work) rides only an agent
+    /// participant's stream — the visitor / widget side receives `nil`.
+    case chatSessionEnded(sessionId: String, reason: String, acw: Acw?)
 
     public var sessionId: String {
         switch self {
@@ -502,7 +709,8 @@ public enum ClientEvent: Sendable {
              .peerDetached(let s, _, _),
              .disconnected(let s, _),
              .callError(let s, _),
-             .audioRouteChanged(let s, _):
+             .audioRouteChanged(let s, _),
+             .chatSessionEnded(let s, _, _):
             return s
         }
     }
@@ -531,7 +739,7 @@ public struct OrigonError: Error, Sendable, CustomStringConvertible, LocalizedEr
         case http = 6
         case attachment = 7
         case other = 8
-        /// Upload was cancelled via `deleteAttachment(sessionId:attachmentId:)`
+        /// Upload was cancelled via `deleteAttachment(attachmentId:)`
         /// using the same `uploadId` passed to `uploadAttachment`. Only
         /// surfaced from `uploadAttachment`. See its doc for the pattern.
         case cancelled = 9
