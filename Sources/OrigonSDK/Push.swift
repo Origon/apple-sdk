@@ -53,6 +53,12 @@ extension OrigonClient {
         PushRegistrar.shared.unregister()
     }
 
+    /// Clear local preview authority immediately without contacting the backend.
+    /// Hosts call this during logout even when no initialized client exists.
+    public static func clearPushNotificationAuthority() {
+        PushRegistrar.shared.clearAuthority()
+    }
+
     /// Generation-bound logout gate. Completes before returning, so the client
     /// may be released immediately afterwards.
     public func unregisterPushNotificationsForLogout() throws {
@@ -87,6 +93,9 @@ final class PushRegistrar: @unchecked Sendable {
     private var bufferedToken: String?
     private var bufferedEnvironment: APNSEnvironment?
     private var appGroupIdentifier: String?
+    /// Logout closes registration until a different client attaches. This
+    /// drops late APNs callbacks still targeting the old identity.
+    private var authoritySuspended = false
 
     /// APNs environment for this build. Constant for the process lifetime,
     /// so it is resolved once on first use.
@@ -101,6 +110,7 @@ final class PushRegistrar: @unchecked Sendable {
     func attach(_ client: OrigonClient) {
         queue.async {
             self.client = client
+            self.authoritySuspended = false
             let persisted = PushRegistrationStore.registration()
             guard let token = self.bufferedToken ?? persisted?.token else { return }
             let environment = self.bufferedEnvironment
@@ -121,6 +131,10 @@ final class PushRegistrar: @unchecked Sendable {
 
     func register(token: String, environment: APNSEnvironment?) {
         queue.async {
+            guard !self.authoritySuspended else {
+                self.log.debug("push authority suspended; dropping token callback")
+                return
+            }
             let resolved = environment ?? self.detectedEnvironment
             self.bufferedToken = token
             self.bufferedEnvironment = resolved
@@ -134,6 +148,7 @@ final class PushRegistrar: @unchecked Sendable {
 
     func unregister() {
         queue.async {
+            self.authoritySuspended = true
             self.bufferedToken = nil
             self.bufferedEnvironment = nil
             guard let registration = PushRegistrationStore.registration() else {
@@ -161,18 +176,28 @@ final class PushRegistrar: @unchecked Sendable {
 
     func unregisterSynchronously(client: OrigonClient) throws {
         try queue.sync {
+            authoritySuspended = true
             bufferedToken = nil
             bufferedEnvironment = nil
             guard let registration = PushRegistrationStore.registration() else {
                 PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier)
                 return
             }
+            defer { PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier) }
             try client.unregisterPush(
                 token: registration.token,
                 provider: "apns",
                 environment: registration.environment,
                 generation: registration.generation
             )
+        }
+    }
+
+    func clearAuthority() {
+        queue.sync {
+            authoritySuspended = true
+            bufferedToken = nil
+            bufferedEnvironment = nil
             PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier)
         }
     }

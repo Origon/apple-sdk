@@ -28,6 +28,12 @@ registers the cross-repository contracts that must change and validate together.
   optional App Group store for Notification Service Extensions. Logout uses the
   exact token/provider/environment/generation tuple to unregister and then clears
   local notification authority.
+- Logout clears local generation authority even when the generation-bound
+  backend unregister fails or no initialized client exists. A delayed provider
+  delivery therefore cannot promote its preview after local identity removal.
+  Clearing authority also suspends later APNs callbacks and already-queued
+  registrations for that client epoch; only attaching a newly initialized
+  client resumes registration.
 - A notification preview is trusted only when its `endpointGeneration` matches
   the locally persisted generation. A mismatch must use generic content or be
   suppressed. Notification taps open the named chat with takeover enabled.
