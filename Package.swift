@@ -21,5 +21,10 @@ let package = Package(
             dependencies: ["COrigonSDK"],
             path: "Sources/OrigonSDK"
         ),
+        .testTarget(
+            name: "OrigonSDKTests",
+            dependencies: ["OrigonSDK"],
+            path: "Tests/OrigonSDKTests"
+        ),
     ]
 )

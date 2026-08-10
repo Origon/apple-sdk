@@ -67,10 +67,9 @@ public enum APNSEnvironment: String, Sendable {
 public struct ClientConfig: Sendable {
     public let endpoint: String
     public let token: String?
-    /// Optional. When omitted, the SDK falls back to the device
-    /// identifier (`UIDevice.current.identifierForVendor`) so anonymous
-    /// users still get a stable identity. Initialization fails only if
-    /// both this and the device identifier are unavailable.
+    /// Optional. When omitted, the SDK uses its random, install-scoped
+    /// identifier as an opaque anonymous id. It is not a person or hardware
+    /// identity and is excluded from backup/restore.
     public let userId: String?
     /// Initial session-level attributes. Injected as `data.attributes`
     /// on `POST /session/start`. Encoded to a JSON string via
@@ -542,6 +541,8 @@ public struct SessionSummary: Codable, Sendable {
     public let sessionId: String
     public let subject: String
     public let channel: Channel
+    /// Live only on the cx owner that served this directory row.
+    public let active: Bool
     public let createdAt: String
     public let updatedAt: String
     public let lastMessage: Message?
@@ -551,6 +552,7 @@ public struct SessionSummary: Codable, Sendable {
         sessionId: String,
         subject: String,
         channel: Channel,
+        active: Bool,
         createdAt: String,
         updatedAt: String,
         lastMessage: Message? = nil,
@@ -559,10 +561,33 @@ public struct SessionSummary: Codable, Sendable {
         self.sessionId = sessionId
         self.subject = subject
         self.channel = channel
+        self.active = active
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastMessage = lastMessage
         self.contact = contact
+    }
+}
+
+public enum RestoreStatus: Int32, Sendable {
+    case connected = 0
+    case alreadyConnected = 1
+    case activeElsewhere = 2
+    case noLongerActive = 3
+    case failed = 4
+}
+
+/// One passive restore outcome. A failure for one retained chat does not fail
+/// the other rows in the report.
+public struct RestoreResult: Sendable {
+    public let sessionId: String
+    public let status: RestoreStatus
+    public let error: String?
+
+    public init(sessionId: String, status: RestoreStatus, error: String? = nil) {
+        self.sessionId = sessionId
+        self.status = status
+        self.error = error
     }
 }
 

@@ -1,8 +1,5 @@
 import Foundation
 import COrigonSDK
-#if canImport(UIKit)
-import UIKit
-#endif
 
 /// The primary interface to the Origon platform on Apple platforms.
 ///
@@ -33,31 +30,20 @@ public final class OrigonClient: @unchecked Sendable {
         var newHandle: OpaquePointer?
         let attributesJson = try Self.encodeAttributes(config.attributes)
         let bundleId = Bundle.main.bundleIdentifier
-        let deviceId = Self.resolveDeviceId()
-        // `userId` is optional at the SDK surface but required by the
-        // core. Fall back to the device id so anonymous users still get
-        // a stable identity. When the consumer omits `userId` and no
-        // device id is available, there is nothing to identify the user
-        // with — fail fast rather than send a blank id.
-        guard let effectiveUserId = config.userId ?? deviceId else {
-            throw OrigonError(
-                kind: .missingField,
-                code: "user_id",
-                message: "userId was not provided and no device identifier is available"
-            )
-        }
+        let installationId = try InstallationIdentity.loadOrCreate()
+        let effectiveUserId = config.userId ?? installationId
         let rc: Int32 = config.endpoint.withCString { endpointPtr in
             withOptionalCString(bundleId) { bundlePtr in
                 withOptionalCString(config.token) { tokenPtr in
                     effectiveUserId.withCString { userIdPtr in
-                        withOptionalCString(deviceId) { deviceIdPtr in
+                        installationId.withCString { installationIdPtr in
                             withOptionalCString(attributesJson) { attrsPtr in
                                 var cfg = SessionClientConfig(
                                     endpoint: endpointPtr,
                                     bundle_id: bundlePtr,
                                     token: tokenPtr,
                                     user_id: userIdPtr,
-                                    device_id: deviceIdPtr,
+                                    installation_id: installationIdPtr,
                                     attributes_json: attrsPtr
                                 )
                                 return session_client_create(&cfg, &newHandle, &err)
@@ -74,21 +60,6 @@ public final class OrigonClient: @unchecked Sendable {
         // Become the active client for push registration and flush any
         // token buffered before initialization. See `Push.swift`.
         PushRegistrar.shared.attach(self)
-    }
-
-    /// Resolve a stable per-install device identifier.
-    ///
-    /// iOS (and the UIKit-backed platforms) use
-    /// `identifierForVendor`, which is stable across launches and resets
-    /// only when every app from this vendor is removed. Platforms without
-    /// UIKit (macOS) return `nil`, which disables push registration and,
-    /// when no `userId` is supplied, surfaces as an init error.
-    private static func resolveDeviceId() -> String? {
-        #if canImport(UIKit)
-        return UIDevice.current.identifierForVendor?.uuidString
-        #else
-        return nil
-        #endif
     }
 
     /// Serialize a `[String: Any]?` to a JSON string. Returns `nil` when
@@ -125,24 +96,40 @@ public final class OrigonClient: @unchecked Sendable {
     /// Blocking FFI call — invoked off the main thread by
     /// ``PushRegistrar``. The public, buffering entry point is the static
     /// ``OrigonClient/registerForPushNotifications(deviceToken:environment:)``.
-    func registerPush(token: String, provider: String, environment: String?) throws {
+    func registerPush(token: String, provider: String, environment: String?) throws -> String {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
+        var generationPtr: UnsafeMutablePointer<CChar>?
         let rc: Int32 = token.withCString { tokenPtr in
             provider.withCString { providerPtr in
                 withOptionalCString(environment) { envPtr in
-                    session_client_register_push(handle, tokenPtr, providerPtr, envPtr, &err)
+                    session_client_register_push(handle, tokenPtr, providerPtr, envPtr, &generationPtr, &err)
                 }
             }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
+        guard let generationPtr else {
+            throw OrigonError(kind: .other, message: "push registration returned no generation")
+        }
+        defer { session_string_free(generationPtr) }
+        return String(cString: generationPtr)
     }
 
     /// Blocking FFI call — invoked off the main thread by ``PushRegistrar``.
-    func unregisterPush() throws {
+    func unregisterPush(token: String, provider: String, environment: String?, generation: String) throws {
         guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = session_client_unregister_push(handle, &err)
+        let rc: Int32 = token.withCString { tokenPtr in
+            provider.withCString { providerPtr in
+                withOptionalCString(environment) { environmentPtr in
+                    generation.withCString { generationPtr in
+                        session_client_unregister_push(
+                            handle, tokenPtr, providerPtr, environmentPtr, generationPtr, &err
+                        )
+                    }
+                }
+            }
+        }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
@@ -369,6 +356,40 @@ public final class OrigonClient: @unchecked Sendable {
                 message: "decode getSessions: \(error.localizedDescription)"
             )
         }
+    }
+
+    /// Passively attach every retained active chat, newest first. This never
+    /// replaces another installation's active visitor stream.
+    public func restoreActiveChats() throws -> [RestoreResult] {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var report = SessionRestoreReport()
+        let rc = session_client_restore_active_chats(handle, &report, &err)
+        if rc != 0 { throw OrigonError.consume(&err) }
+        defer { session_restore_report_free(&report) }
+        guard let items = report.items else { return [] }
+        return (0..<Int(report.len)).compactMap { index in
+            let item = items[index]
+            guard let sessionId = item.session_id,
+                  let status = RestoreStatus(rawValue: item.status) else { return nil }
+            return RestoreResult(
+                sessionId: String(cString: sessionId),
+                status: status,
+                error: item.error.map { String(cString: $0) }
+            )
+        }
+    }
+
+    /// Open one retained chat. Use takeover only for explicit navigation or a
+    /// notification tap; background restore must use `restoreActiveChats()`.
+    public func openChat(sessionId: String, takeover: Bool) throws -> StartSessionResponse {
+        guard let handle else { throw OrigonError.notInitialized }
+        var err = SessionError()
+        var response = SessionStartResponse()
+        let rc = sessionId.withCString {
+            session_client_open_chat(handle, $0, takeover ? 1 : 0, &response, &err)
+        }
+        return try Self.consumeStartResponse(rc, &response, &err)
     }
 
     /// `GET /session/<id>` — history for one session.
