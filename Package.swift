@@ -23,6 +23,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Foundation"),
                 .linkedFramework("AVFAudio", .when(platforms: [.iOS])),
+                .linkedFramework("AudioToolbox", .when(platforms: [.iOS])),
                 .linkedFramework("CoreFoundation", .when(platforms: [.macOS])),
                 .linkedFramework("AVFoundation", .when(platforms: [.macOS])),
                 .linkedFramework("AudioToolbox", .when(platforms: [.macOS])),
