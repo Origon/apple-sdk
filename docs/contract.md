@@ -48,9 +48,21 @@ registers the cross-repository contracts that must change and validate together.
   Clearing authority also suspends later APNs callbacks and already-queued
   registrations for that client epoch; only attaching a newly initialized
   client resumes registration.
-- A notification preview is trusted only when its `endpointGeneration` matches
-  the locally persisted generation. A mismatch must use generic content or be
-  suppressed. Notification taps open the named chat with takeover enabled.
+- Inbound cx push custom data is the string-valued shape `type`, `sessionId`,
+  `clientId`, `messageId`, `endpointGeneration`, `preview`, plus optional
+  nonblank `title`; its canonical producer is
+  `/home/yl/workspace/platform/cx/src/services/push/provider.rs::custom_data`
+  and the reciprocal producer registration is
+  `/home/yl/workspace/platform/cx/CONTRACT.md` §7. The title is the normalized,
+  bounded authenticated human Dock-agent name and is omitted, never `null`,
+  when absent or blank. Neither title nor preview may be copied into visible
+  content unless `endpointGeneration` exactly matches the locally persisted
+  generation. On an exact match, `contentForDelivery` copies each present,
+  nonblank field independently; an absent/blank field preserves the original
+  provider/APNs value. A stale or missing generation preserves the original
+  provider/APNs title and body unchanged and invents no SDK branding; the host
+  may instead suppress presentation. Notification taps use `sessionId` to open
+  the named chat with takeover enabled.
   Provider invalid-token cleanup and the server's 90-day endpoint TTL are the
   uninstall cleanup path; uninstall cannot send an unregister call.
 

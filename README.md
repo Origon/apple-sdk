@@ -361,11 +361,15 @@ request in the background; failures are logged, not thrown.
 
 Each successful registration persists the opaque server generation. A
 Notification Service Extension must compare the incoming
-`endpointGeneration` before showing `preview`; use
+`endpointGeneration` before showing the optional human-agent `title` or
+`preview`; use
 `OrigonPushNotification.contentForDelivery` as shown in
-`examples/notification-service-extension/NotificationService.swift`. A mismatch
-is reduced to generic “New message” content; foreground delegates may instead
-suppress it by returning no presentation options when
+`examples/notification-service-extension/NotificationService.swift`. On an
+exact match, the helper copies each present, nonblank field over the APNs alert.
+An absent or blank `title` keeps the APNs title. A stale or missing generation
+keeps the original provider/APNs title and body unchanged—the SDK never invents
+fallback branding. Foreground delegates may instead suppress the notification
+by returning no presentation options when
 `OrigonPushNotification.isCurrent(...)` is false. On a matching notification
 tap, read `OrigonPushNotification.sessionId(...)` and call
 `openChat(sessionId:takeover: true)`.

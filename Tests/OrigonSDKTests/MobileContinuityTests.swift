@@ -27,4 +27,82 @@ final class MobileContinuityTests: XCTestCase {
         ))
         XCTAssertFalse(OrigonPushNotification.isCurrent(userInfo: [:], appGroupIdentifier: suiteName))
     }
+
+    func testExactGenerationCopiesAuthorizedTitleAndPreview() {
+        let copy = OrigonPushNotification.deliveryCopy(
+            providerTitle: "Provider title",
+            providerBody: "Provider body",
+            userInfo: [
+                "endpointGeneration": "current",
+                "title": "Agent Name",
+                "preview": "Authorized preview",
+            ],
+            currentGeneration: "current"
+        )
+
+        XCTAssertEqual(copy.title, "Agent Name")
+        XCTAssertEqual(copy.body, "Authorized preview")
+    }
+
+    func testStaleGenerationPreservesProviderVisibleCopy() {
+        let copy = OrigonPushNotification.deliveryCopy(
+            providerTitle: "Provider title",
+            providerBody: "Provider body",
+            userInfo: [
+                "endpointGeneration": "stale",
+                "title": "Unauthorized title",
+                "preview": "Unauthorized preview",
+            ],
+            currentGeneration: "current"
+        )
+
+        XCTAssertEqual(copy.title, "Provider title")
+        XCTAssertEqual(copy.body, "Provider body")
+    }
+
+    func testMissingGenerationPreservesProviderVisibleCopy() {
+        let copy = OrigonPushNotification.deliveryCopy(
+            providerTitle: "Provider title",
+            providerBody: "Provider body",
+            userInfo: [
+                "title": "Unauthorized title",
+                "preview": "Unauthorized preview",
+            ],
+            currentGeneration: "current"
+        )
+
+        XCTAssertEqual(copy.title, "Provider title")
+        XCTAssertEqual(copy.body, "Provider body")
+    }
+
+    func testBlankAuthorizedTitlePreservesProviderTitle() {
+        let copy = OrigonPushNotification.deliveryCopy(
+            providerTitle: "Provider title",
+            providerBody: "Provider body",
+            userInfo: [
+                "endpointGeneration": "current",
+                "title": " \n\t ",
+                "preview": "Authorized preview",
+            ],
+            currentGeneration: "current"
+        )
+
+        XCTAssertEqual(copy.title, "Provider title")
+        XCTAssertEqual(copy.body, "Authorized preview")
+    }
+
+    func testAbsentAuthorizedTitlePreservesProviderTitle() {
+        let copy = OrigonPushNotification.deliveryCopy(
+            providerTitle: "Provider title",
+            providerBody: "Provider body",
+            userInfo: [
+                "endpointGeneration": "current",
+                "preview": "Authorized preview",
+            ],
+            currentGeneration: "current"
+        )
+
+        XCTAssertEqual(copy.title, "Provider title")
+        XCTAssertEqual(copy.body, "Authorized preview")
+    }
 }
