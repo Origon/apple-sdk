@@ -1,6 +1,58 @@
 import Foundation
 import COrigonSDK
 
+final class NativeHandleGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var handle: OpaquePointer?
+    private var activeCalls = 0
+    private var isClosing = false
+
+    init(_ handle: OpaquePointer) {
+        self.handle = handle
+    }
+
+    func withHandle<R>(_ body: (OpaquePointer) throws -> R) throws -> R {
+        condition.lock()
+        guard !isClosing, let handle else {
+            condition.unlock()
+            throw OrigonError.notInitialized
+        }
+        activeCalls += 1
+        condition.unlock()
+        defer {
+            condition.lock()
+            activeCalls -= 1
+            if activeCalls == 0 { condition.broadcast() }
+            condition.unlock()
+        }
+        return try body(handle)
+    }
+
+    func withHandleOr<R>(_ fallback: R, _ body: (OpaquePointer) -> R) -> R {
+        (try? withHandle(body)) ?? fallback
+    }
+
+    func close(_ destroy: (OpaquePointer) -> Void) {
+        condition.lock()
+        while isClosing { condition.wait() }
+        guard let closing = handle else {
+            condition.unlock()
+            return
+        }
+        isClosing = true
+        while activeCalls > 0 { condition.wait() }
+        handle = nil
+        condition.unlock()
+
+        destroy(closing)
+
+        condition.lock()
+        isClosing = false
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 /// The primary interface to the Origon platform on Apple platforms.
 ///
 /// Backed by the `COrigonSDK` XCFramework (statically linked
@@ -10,7 +62,7 @@ import COrigonSDK
 /// All fallible methods throw ``OrigonError`` with a structured
 /// `kind` / `statusCode` / `code` / `message`.
 public final class OrigonClient: @unchecked Sendable {
-    private var handle: OpaquePointer?
+    private let nativeGate: NativeHandleGate
 
     /// Install the global tracing subscriber. Idempotent — only the
     /// first call installs; subsequent calls are no-ops.
@@ -32,21 +84,30 @@ public final class OrigonClient: @unchecked Sendable {
         let bundleId = Bundle.main.bundleIdentifier
         let installationId = try InstallationIdentity.loadOrCreate()
         let effectiveUserId = config.userId ?? installationId
+        let cacheRoot: String?
+        if config.chatCachePolicy == .enabled {
+            cacheRoot = try ChatCacheStorage.prepare().path
+        } else {
+            cacheRoot = nil
+        }
         let rc: Int32 = config.endpoint.withCString { endpointPtr in
             withOptionalCString(bundleId) { bundlePtr in
                 withOptionalCString(config.token) { tokenPtr in
                     effectiveUserId.withCString { userIdPtr in
                         installationId.withCString { installationIdPtr in
                             withOptionalCString(attributesJson) { attrsPtr in
-                                var cfg = SessionClientConfig(
-                                    endpoint: endpointPtr,
-                                    bundle_id: bundlePtr,
-                                    token: tokenPtr,
-                                    user_id: userIdPtr,
-                                    installation_id: installationIdPtr,
-                                    attributes_json: attrsPtr
-                                )
-                                return session_client_create(&cfg, &newHandle, &err)
+                                withOptionalCString(cacheRoot) { cachePtr in
+                                    var cfg = SessionClientConfig(
+                                        endpoint: endpointPtr,
+                                        bundle_id: bundlePtr,
+                                        token: tokenPtr,
+                                        user_id: userIdPtr,
+                                        installation_id: installationIdPtr,
+                                        attributes_json: attrsPtr,
+                                        cache_dir: cachePtr
+                                    )
+                                    return session_client_create(&cfg, &newHandle, &err)
+                                }
                             }
                         }
                     }
@@ -56,7 +117,7 @@ public final class OrigonClient: @unchecked Sendable {
         guard rc == 0, let newHandle else {
             throw OrigonError.consume(&err)
         }
-        self.handle = newHandle
+        self.nativeGate = NativeHandleGate(newHandle)
         // Become the active client for push registration and flush any
         // token buffered before initialization. See `Push.swift`.
         PushRegistrar.shared.attach(self)
@@ -86,9 +147,21 @@ public final class OrigonClient: @unchecked Sendable {
     deinit {
         // No explicit push detach needed: PushRegistrar holds the client
         // weakly, so its reference auto-nils when we deallocate.
-        if let handle {
-            session_client_destroy(handle)
-        }
+        close()
+    }
+
+    /// Cancel and join every native finite loader, then destroy the client.
+    /// Call before `clearAllChatCaches()` during logout.
+    public func close() {
+        nativeGate.close { session_client_destroy($0) }
+    }
+
+    private func withHandle<R>(_ body: (OpaquePointer) throws -> R) throws -> R {
+        try nativeGate.withHandle(body)
+    }
+
+    private func withHandleOr<R>(_ fallback: R, _ body: (OpaquePointer) -> R) -> R {
+        nativeGate.withHandleOr(fallback, body)
     }
 
     // MARK: - Push notifications (internal)
@@ -97,13 +170,16 @@ public final class OrigonClient: @unchecked Sendable {
     /// ``PushRegistrar``. The public, buffering entry point is the static
     /// ``OrigonClient/registerForPushNotifications(deviceToken:environment:)``.
     func registerPush(token: String, provider: String, environment: String?) throws -> String {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var generationPtr: UnsafeMutablePointer<CChar>?
-        let rc: Int32 = token.withCString { tokenPtr in
-            provider.withCString { providerPtr in
-                withOptionalCString(environment) { envPtr in
-                    session_client_register_push(handle, tokenPtr, providerPtr, envPtr, &generationPtr, &err)
+        let rc: Int32 = try withHandle { handle in
+            token.withCString { tokenPtr in
+                provider.withCString { providerPtr in
+                    withOptionalCString(environment) { envPtr in
+                        session_client_register_push(
+                            handle, tokenPtr, providerPtr, envPtr, &generationPtr, &err
+                        )
+                    }
                 }
             }
         }
@@ -117,15 +193,16 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Blocking FFI call — invoked off the main thread by ``PushRegistrar``.
     func unregisterPush(token: String, provider: String, environment: String?, generation: String) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc: Int32 = token.withCString { tokenPtr in
-            provider.withCString { providerPtr in
-                withOptionalCString(environment) { environmentPtr in
-                    generation.withCString { generationPtr in
-                        session_client_unregister_push(
-                            handle, tokenPtr, providerPtr, environmentPtr, generationPtr, &err
-                        )
+        let rc: Int32 = try withHandle { handle in
+            token.withCString { tokenPtr in
+                provider.withCString { providerPtr in
+                    withOptionalCString(environment) { environmentPtr in
+                        generation.withCString { generationPtr in
+                            session_client_unregister_push(
+                                handle, tokenPtr, providerPtr, environmentPtr, generationPtr, &err
+                            )
+                        }
                     }
                 }
             }
@@ -137,40 +214,39 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Pre-populated first assistant message configured for the tenant.
     public var startMessage: String {
-        guard let handle else { return "" }
-        guard let cstr = session_client_get_start_message(handle) else { return "" }
-        defer { session_string_free(cstr) }
-        return String(cString: cstr)
+        withHandleOr("") { handle in
+            guard let cstr = session_client_get_start_message(handle) else { return "" }
+            defer { session_string_free(cstr) }
+            return String(cString: cstr)
+        }
     }
 
     public var isChatEnabled: Bool {
-        guard let handle else { return false }
-        return session_client_is_chat_enabled(handle) == 1
+        withHandleOr(false) { session_client_is_chat_enabled($0) == 1 }
     }
 
     public var isCallEnabled: Bool {
-        guard let handle else { return false }
-        return session_client_is_call_enabled(handle) == 1
+        withHandleOr(false) { session_client_is_call_enabled($0) == 1 }
     }
 
     /// True when chat and voice may share one session.
     public var multipleChannels: Bool {
-        guard let handle else { return false }
-        return session_client_is_multiple_channels_allowed(handle) == 1
+        withHandleOr(false) { session_client_is_multiple_channels_allowed($0) == 1 }
     }
 
     public var attachmentPolicy: AttachmentPolicy {
-        guard let handle else { return .disabled }
-        var raw = SessionAttachmentPolicy()
-        guard session_client_get_attachment_policy(handle, &raw) == 0 else {
-            return .disabled
+        withHandleOr(.disabled) { handle in
+            var raw = SessionAttachmentPolicy()
+            guard session_client_get_attachment_policy(handle, &raw) == 0 else {
+                return .disabled
+            }
+            return AttachmentPolicy(
+                images: AttachmentRule(enabled: raw.images.enabled == 1, maxSize: raw.images.max_size),
+                documents: AttachmentRule(enabled: raw.documents.enabled == 1, maxSize: raw.documents.max_size),
+                videos: AttachmentRule(enabled: raw.videos.enabled == 1, maxSize: raw.videos.max_size),
+                audio: AttachmentRule(enabled: raw.audio.enabled == 1, maxSize: raw.audio.max_size)
+            )
         }
-        return AttachmentPolicy(
-            images: AttachmentRule(enabled: raw.images.enabled == 1, maxSize: raw.images.max_size),
-            documents: AttachmentRule(enabled: raw.documents.enabled == 1, maxSize: raw.documents.max_size),
-            videos: AttachmentRule(enabled: raw.videos.enabled == 1, maxSize: raw.videos.max_size),
-            audio: AttachmentRule(enabled: raw.audio.enabled == 1, maxSize: raw.audio.max_size)
-        )
     }
 
     public var serverConfig: ServerConfig {
@@ -186,11 +262,12 @@ public final class OrigonClient: @unchecked Sendable {
     /// Replace session-level attributes injected as `data.attributes`
     /// on subsequent `startCall` / `startChat` calls. Pass `nil` to clear.
     public func setAttributes(_ attrs: [String: Any]?) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         let json = try Self.encodeAttributes(attrs)
         var err = SessionError()
-        let rc: Int32 = withOptionalCString(json) { ptr in
-            session_client_set_attributes(handle, ptr, &err)
+        let rc: Int32 = try withHandle { handle in
+            withOptionalCString(json) { ptr in
+                session_client_set_attributes(handle, ptr, &err)
+            }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
@@ -207,17 +284,18 @@ public final class OrigonClient: @unchecked Sendable {
     /// cancels the in-flight dial. Throws only for the `/session/start` HTTP
     /// failure or a malformed request.
     public func startCall(_ options: StartCallOptions) throws -> StartSessionResponse {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var resp = SessionStartResponse()
 
-        let rc: Int32 = withOptionalCString(options.sessionId) { sidPtr in
-            withOptionalCString(options.data) { dataPtr in
-                var opts = SessionStartCallOptions(
-                    session_id: sidPtr,
-                    data_json: dataPtr
-                )
-                return session_client_start_call(handle, &opts, &resp, &err)
+        let rc: Int32 = try withHandle { handle in
+            withOptionalCString(options.sessionId) { sidPtr in
+                withOptionalCString(options.data) { dataPtr in
+                    var opts = SessionStartCallOptions(
+                        session_id: sidPtr,
+                        data_json: dataPtr
+                    )
+                    return session_client_start_call(handle, &opts, &resp, &err)
+                }
             }
         }
         return try Self.consumeStartResponse(rc, &resp, &err)
@@ -236,20 +314,21 @@ public final class OrigonClient: @unchecked Sendable {
     /// (the session is already gone) throws — returning normally would leave
     /// the app rendering a composer on a dead conversation.
     public func startChat(_ options: StartChatOptions) throws -> StartSessionResponse {
-        guard let handle else { throw OrigonError.notInitialized }
         let firstJson = try Self.encodePayload(options.firstMessage)
         var err = SessionError()
         var resp = SessionStartResponse()
 
-        let rc: Int32 = firstJson.withCString { firstPtr in
-            withOptionalCString(options.sessionId) { sidPtr in
-                withOptionalCString(options.data) { dataPtr in
-                    var opts = SessionStartChatOptions(
-                        first_message_json: firstPtr,
-                        session_id: sidPtr,
-                        data_json: dataPtr
-                    )
-                    return session_client_start_chat(handle, &opts, &resp, &err)
+        let rc: Int32 = try withHandle { handle in
+            firstJson.withCString { firstPtr in
+                withOptionalCString(options.sessionId) { sidPtr in
+                    withOptionalCString(options.data) { dataPtr in
+                        var opts = SessionStartChatOptions(
+                            first_message_json: firstPtr,
+                            session_id: sidPtr,
+                            data_json: dataPtr
+                        )
+                        return session_client_start_chat(handle, &opts, &resp, &err)
+                    }
                 }
             }
         }
@@ -306,17 +385,18 @@ public final class OrigonClient: @unchecked Sendable {
         _ input: JoinInput,
         _ call: (OpaquePointer, UnsafePointer<SessionJoinInput>, UnsafeMutablePointer<SessionError>) -> Int32
     ) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc: Int32 = input.sessionId.withCString { sidPtr in
-            input.url.withCString { urlPtr in
-                input.token.withCString { tokPtr in
-                    var raw = SessionJoinInput(
-                        session_id: sidPtr,
-                        url: urlPtr,
-                        token: tokPtr
-                    )
-                    return call(handle, &raw, &err)
+        let rc: Int32 = try withHandle { handle in
+            input.sessionId.withCString { sidPtr in
+                input.url.withCString { urlPtr in
+                    input.token.withCString { tokPtr in
+                        var raw = SessionJoinInput(
+                            session_id: sidPtr,
+                            url: urlPtr,
+                            token: tokPtr
+                        )
+                        return call(handle, &raw, &err)
+                    }
                 }
             }
         }
@@ -324,25 +404,209 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     public func endSession(_ id: String) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = id.withCString { session_client_end_session(handle, $0, &err) }
+        let rc = try withHandle { handle in
+            id.withCString { session_client_end_session(handle, $0, &err) }
+        }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
     public func endAllSessions() throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = session_client_end_all_sessions(handle, &err)
+        let rc = try withHandle { session_client_end_all_sessions($0, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// Finite transcript load: optional cache snapshot, one authoritative
+    /// refresh (or typed refresh failure), then completion.
+    public func sessionUpdates(
+        id: String,
+        policy: SessionLoadPolicy = .cacheThenNetwork
+    ) throws -> AsyncThrowingStream<SessionLoadUpdate, Error> {
+        var err = SessionError()
+        var rawLoader: OpaquePointer?
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_session_loader_start(handle, $0, policy.rawValue, &rawLoader, &err)
+            }
+        }
+        guard rc == 0, let rawLoader else { throw OrigonError.consume(&err) }
+        let loader = NativeLoader(rawLoader)
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(2)) { continuation in
+            let task = Task.detached {
+                defer { loader.free() }
+                do {
+                    while !Task.isCancelled {
+                        switch try loader.next() {
+                        case .update(let json):
+                            let snapshot = try JSONDecoder().decode(
+                                SessionSnapshot.self,
+                                from: Data(json.utf8)
+                            )
+                            continuation.yield(.snapshot(snapshot))
+                        case .refreshFailed(let error, let cached):
+                            continuation.yield(.refreshFailed(
+                                error: error,
+                                cachedSnapshotEmitted: cached
+                            ))
+                        case .end, .cancelled:
+                            continuation.finish()
+                            return
+                        }
+                    }
+                    loader.cancel()
+                    continuation.finish()
+                } catch {
+                    loader.cancel()
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                loader.cancel()
+                task.cancel()
+            }
+        }
+    }
+
+    /// Finite directory load with the same cache/network ordering as
+    /// `sessionUpdates(id:policy:)`.
+    public func sessionDirectoryUpdates(
+        policy: SessionLoadPolicy = .cacheThenNetwork
+    ) throws -> AsyncThrowingStream<SessionDirectoryLoadUpdate, Error> {
+        var err = SessionError()
+        var rawLoader: OpaquePointer?
+        let rc = try withHandle { handle in
+            session_client_directory_loader_start(
+                handle, policy.rawValue, &rawLoader, &err
+            )
+        }
+        guard rc == 0, let rawLoader else { throw OrigonError.consume(&err) }
+        let loader = NativeLoader(rawLoader)
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(2)) { continuation in
+            let task = Task.detached {
+                defer { loader.free() }
+                do {
+                    while !Task.isCancelled {
+                        switch try loader.next() {
+                        case .update(let json):
+                            let snapshot = try JSONDecoder().decode(
+                                SessionDirectorySnapshot.self,
+                                from: Data(json.utf8)
+                            )
+                            continuation.yield(.snapshot(snapshot))
+                        case .refreshFailed(let error, let cached):
+                            continuation.yield(.refreshFailed(
+                                error: error,
+                                cachedSnapshotEmitted: cached
+                            ))
+                        case .end, .cancelled:
+                            continuation.finish()
+                            return
+                        }
+                    }
+                    loader.cancel()
+                    continuation.finish()
+                } catch {
+                    loader.cancel()
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                loader.cancel()
+                task.cancel()
+            }
+        }
+    }
+
+    public func cachedSession(id: String) async throws -> SessionSnapshot? {
+        for try await update in try sessionUpdates(id: id, policy: .cacheOnly) {
+            switch update {
+            case .snapshot(let snapshot): return snapshot
+            case .refreshFailed(let error, _): throw error
+            }
+        }
+        return nil
+    }
+
+    public func refreshSession(id: String) async throws -> SessionSnapshot {
+        for try await update in try sessionUpdates(id: id, policy: .networkOnly) {
+            switch update {
+            case .snapshot(let snapshot): return snapshot
+            case .refreshFailed(let error, _): throw error
+            }
+        }
+        throw OrigonError(kind: .other, message: "session refresh ended without a snapshot")
+    }
+
+    public func cachedSessions() async throws -> SessionDirectorySnapshot? {
+        for try await update in try sessionDirectoryUpdates(policy: .cacheOnly) {
+            switch update {
+            case .snapshot(let snapshot): return snapshot
+            case .refreshFailed(let error, _): throw error
+            }
+        }
+        return nil
+    }
+
+    public func refreshSessions() async throws -> SessionDirectorySnapshot {
+        for try await update in try sessionDirectoryUpdates(policy: .networkOnly) {
+            switch update {
+            case .snapshot(let snapshot): return snapshot
+            case .refreshFailed(let error, _): throw error
+            }
+        }
+        throw OrigonError(kind: .other, message: "directory refresh ended without a snapshot")
+    }
+
+    public func removeCachedSession(id: String) async throws {
+        try await Task.detached {
+            try self.withHandle { handle in
+                var err = SessionError()
+                let rc = id.withCString {
+                    session_client_remove_cached_session(handle, $0, &err)
+                }
+                if rc != 0 { throw OrigonError.consume(&err) }
+            }
+        }.value
+    }
+
+    public func clearChatCache() async throws {
+        try await Task.detached {
+            try self.withHandle { handle in
+                var err = SessionError()
+                if session_client_clear_chat_cache(handle, &err) != 0 {
+                    throw OrigonError.consume(&err)
+                }
+            }
+        }.value
+    }
+
+    public func pruneChatCache() async throws {
+        try await Task.detached {
+            try self.withHandle { handle in
+                var err = SessionError()
+                if session_client_prune_chat_cache(handle, &err) != 0 {
+                    throw OrigonError.consume(&err)
+                }
+            }
+        }.value
+    }
+
+    /// Clear every cached identity scope after all clients have been closed.
+    public static func clearAllChatCaches() async throws {
+        let root = try ChatCacheStorage.prepare().path
+        try await Task.detached {
+            var err = SessionError()
+            let rc = root.withCString { session_chat_cache_clear_root($0, &err) }
+            if rc != 0 { throw OrigonError.consume(&err) }
+        }.value
     }
 
     /// `GET /sessions` — prior sessions for the configured `userId`.
     public func getSessions() throws -> [SessionSummary] {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var jsonPtr: UnsafeMutablePointer<CChar>?
-        let rc = session_client_get_sessions(handle, &jsonPtr, &err)
+        let rc = try withHandle { session_client_get_sessions($0, &jsonPtr, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
         guard let jsonPtr else { return [] }
         defer { session_string_free(jsonPtr) }
@@ -361,10 +625,9 @@ public final class OrigonClient: @unchecked Sendable {
     /// Passively attach every retained active chat, newest first. This never
     /// replaces another installation's active visitor stream.
     public func restoreActiveChats() throws -> [RestoreResult] {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var report = SessionRestoreReport()
-        let rc = session_client_restore_active_chats(handle, &report, &err)
+        let rc = try withHandle { session_client_restore_active_chats($0, &report, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
         defer { session_restore_report_free(&report) }
         guard let items = report.items else { return [] }
@@ -383,22 +646,43 @@ public final class OrigonClient: @unchecked Sendable {
     /// Open one retained chat. Use takeover only for explicit navigation or a
     /// notification tap; background restore must use `restoreActiveChats()`.
     public func openChat(sessionId: String, takeover: Bool) throws -> StartSessionResponse {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var response = SessionStartResponse()
-        let rc = sessionId.withCString {
-            session_client_open_chat(handle, $0, takeover ? 1 : 0, &response, &err)
+        let rc = try withHandle { handle in
+            sessionId.withCString {
+                session_client_open_chat(handle, $0, takeover ? 1 : 0, &response, &err)
+            }
+        }
+        return try Self.consumeStartResponse(rc, &response, &err)
+    }
+
+    /// Open one retained chat with named user authority. Passive restore must
+    /// use `.passive`; explicit navigation and notification taps are the only
+    /// takeover-authorizing intents.
+    public func openChat(
+        sessionId: String,
+        intent: ChatAccessIntent
+    ) throws -> StartSessionResponse {
+        var err = SessionError()
+        var response = SessionStartResponse()
+        let rc = try withHandle { handle in
+            sessionId.withCString {
+                session_client_open_chat_with_intent(
+                    handle, $0, intent.rawValue, &response, &err
+                )
+            }
         }
         return try Self.consumeStartResponse(rc, &response, &err)
     }
 
     /// `GET /session/<id>` — history for one session.
     public func getSession(id: String) throws -> SessionHistory {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var jsonPtr: UnsafeMutablePointer<CChar>?
-        let rc = id.withCString {
-            session_client_get_session(handle, $0, &jsonPtr, &err)
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_get_session(handle, $0, &jsonPtr, &err)
+            }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
         guard let jsonPtr else { return SessionHistory(history: []) }
@@ -419,10 +703,9 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Snapshot of every active session.
     public func activeSessions() throws -> [ActiveSession] {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
         var jsonPtr: UnsafeMutablePointer<CChar>?
-        let rc = session_client_active_session_ids(handle, &jsonPtr, &err)
+        let rc = try withHandle { session_client_active_session_ids($0, &jsonPtr, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
         guard let jsonPtr else { return [] }
         defer { session_string_free(jsonPtr) }
@@ -447,18 +730,18 @@ public final class OrigonClient: @unchecked Sendable {
     // MARK: - Voice controls
 
     public func setMute(id: String, muted: Bool) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = id.withCString {
-            session_client_set_mute(handle, $0, muted ? 1 : 0, &err)
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_set_mute(handle, $0, muted ? 1 : 0, &err)
+            }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
     public func setMuteAll(muted: Bool) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = session_client_set_mute_all(handle, muted ? 1 : 0, &err)
+        let rc = try withHandle { session_client_set_mute_all($0, muted ? 1 : 0, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
@@ -471,9 +754,10 @@ public final class OrigonClient: @unchecked Sendable {
     /// active. Higher-level UI typically wraps this as a boolean speaker toggle
     /// (`.speaker` / `.automatic`).
     public func setAudioOutput(_ route: AudioOutputRoute) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = session_client_set_audio_output(handle, route.rawValue, &err)
+        let rc = try withHandle {
+            session_client_set_audio_output($0, route.rawValue, &err)
+        }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
 
@@ -489,13 +773,14 @@ public final class OrigonClient: @unchecked Sendable {
     /// server-issued `Message`.
     @discardableResult
     public func sendMessage(id: String, payload: SendMessagePayload) throws -> Message {
-        guard let handle else { throw OrigonError.notInitialized }
         let payloadJson = try Self.encodePayload(payload)
         var err = SessionError()
         var outJson: UnsafeMutablePointer<CChar>?
-        let rc: Int32 = id.withCString { idPtr in
-            payloadJson.withCString { jsonPtr in
-                session_client_send_message(handle, idPtr, jsonPtr, &outJson, &err)
+        let rc: Int32 = try withHandle { handle in
+            id.withCString { idPtr in
+                payloadJson.withCString { jsonPtr in
+                    session_client_send_message(handle, idPtr, jsonPtr, &outJson, &err)
+                }
             }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
@@ -522,10 +807,11 @@ public final class OrigonClient: @unchecked Sendable {
     /// `<sessionUrl>/typing` POSTs so only one wire call fires per
     /// typing burst.
     public func notifyTyping(id: String) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = id.withCString {
-            session_client_notify_typing(handle, $0, &err)
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_notify_typing(handle, $0, &err)
+            }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
@@ -535,10 +821,11 @@ public final class OrigonClient: @unchecked Sendable {
     /// transitions; the SDK also fires it implicitly on
     /// ``sendMessage`` and on ``endSession``.
     public func stopTyping(id: String) throws {
-        guard let handle else { throw OrigonError.notInitialized }
         var err = SessionError()
-        let rc = id.withCString {
-            session_client_stop_typing(handle, $0, &err)
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_stop_typing(handle, $0, &err)
+            }
         }
         if rc != 0 { throw OrigonError.consume(&err) }
     }
@@ -565,8 +852,6 @@ public final class OrigonClient: @unchecked Sendable {
         fileName: String,
         onProgress: (@MainActor @Sendable (UploadProgress) -> Void)? = nil
     ) async throws -> Attachment {
-        guard let handle else { throw OrigonError.notInitialized }
-
         // Retain the closure across the C boundary; released on every
         // exit path below.
         let boxPtr: UnsafeMutableRawPointer? = onProgress.map { closure in
@@ -594,17 +879,18 @@ public final class OrigonClient: @unchecked Sendable {
             }
         }
 
-        let handleRef = handle
         do {
             let attachment = try await Task.detached {
-                try Self.invokeUploadAttachment(
-                    handle: handleRef,
-                    uploadId: uploadId,
-                    path: path,
-                    fileName: fileName,
-                    callback: trampoline,
-                    ctx: boxPtr
-                )
+                try self.withHandle { handle in
+                    try Self.invokeUploadAttachment(
+                        handle: handle,
+                        uploadId: uploadId,
+                        path: path,
+                        fileName: fileName,
+                        callback: trampoline,
+                        ctx: boxPtr
+                    )
+                }
             }.value
             if let boxPtr {
                 Unmanaged<UploadProgressBox>.fromOpaque(boxPtr).release()
@@ -669,14 +955,14 @@ public final class OrigonClient: @unchecked Sendable {
     /// by server id. Session-less like ``uploadAttachment(uploadId:path:fileName:onProgress:)``.
     /// See `client-sdk/session/docs/contract.md#cancellation`.
     public func deleteAttachment(attachmentId: String) async throws {
-        guard let handle else { throw OrigonError.notInitialized }
-        let handleRef = handle
         try await Task.detached {
-            var err = SessionError()
-            let rc = attachmentId.withCString { aidPtr in
-                session_client_delete_attachment(handleRef, aidPtr, &err)
+            try self.withHandle { handle in
+                var err = SessionError()
+                let rc = attachmentId.withCString { aidPtr in
+                    session_client_delete_attachment(handle, aidPtr, &err)
+                }
+                if rc != 0 { throw OrigonError.consume(&err) }
             }
-            if rc != 0 { throw OrigonError.consume(&err) }
         }.value
     }
 
@@ -730,13 +1016,14 @@ public final class OrigonClient: @unchecked Sendable {
 
     /// Polls the next event. Returns `nil` when the queue is idle.
     public func pollEvent() -> ClientEvent? {
-        guard let handle else { return nil }
-        var ev = SessionEvent()
-        let kind = session_client_poll_event(handle, &ev)
-        if kind == SESSION_EVENT_NONE { return nil }
-        let mapped = mapEvent(ev)
-        session_event_clear(&ev)
-        return mapped
+        withHandleOr(Optional<ClientEvent>.none) { handle in
+            var ev = SessionEvent()
+            let kind = session_client_poll_event(handle, &ev)
+            if kind == SESSION_EVENT_NONE { return nil }
+            let mapped = mapEvent(ev)
+            session_event_clear(&ev)
+            return mapped
+        }
     }
 
     // MARK: - Private
@@ -866,6 +1153,75 @@ public final class OrigonClient: @unchecked Sendable {
         default:
             return nil
         }
+    }
+}
+
+private enum NativeLoaderStep {
+    case update(String)
+    case refreshFailed(OrigonError, Bool)
+    case end
+    case cancelled
+}
+
+/// Owns the native loader independently of the client pointer. Cancellation
+/// never takes the lock used to exchange the pointer, so it can unblock a
+/// simultaneous blocking `next`; only the loader task calls `free` after
+/// `next` has returned.
+private final class NativeLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pointer: OpaquePointer?
+    private var cancelled = false
+
+    init(_ pointer: OpaquePointer) {
+        self.pointer = pointer
+    }
+
+    func next() throws -> NativeLoaderStep {
+        lock.lock()
+        let current = pointer
+        lock.unlock()
+        guard let current else { return .cancelled }
+
+        var result = SessionLoaderResult()
+        let status = session_loader_next(current, &result)
+        defer { session_loader_result_clear(&result) }
+        guard status >= 0 else {
+            throw OrigonError(kind: .other, message: "native loader next failed")
+        }
+        switch status {
+        case SESSION_LOADER_UPDATE:
+            guard let payload = result.payload_json else {
+                throw OrigonError(kind: .other, message: "native loader returned no payload")
+            }
+            return .update(String(cString: payload))
+        case SESSION_LOADER_ERROR:
+            return .refreshFailed(
+                OrigonError.consume(&result.error),
+                result.cached_snapshot_emitted != 0
+            )
+        case SESSION_LOADER_CANCELLED:
+            return .cancelled
+        default:
+            return .end
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        if let pointer { session_loader_cancel(pointer) }
+        lock.unlock()
+    }
+
+    func free() {
+        lock.lock()
+        if let current = pointer {
+            if !cancelled { session_loader_cancel(current) }
+            cancelled = true
+            pointer = nil
+            session_loader_free(current)
+        }
+        lock.unlock()
     }
 }
 

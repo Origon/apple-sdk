@@ -6,7 +6,7 @@ voice calls. Two screens:
 1. **Endpoint** — user enters an endpoint URL; the app calls
    `SDKManager.initialize(endpoint:)` and persists the URL for next launch.
 2. **Home** — chat surface with a side drawer that lists past sessions
-   (`sdk.getSessions()`), a "New" button, and a voice button that initiates
+   (cache-first `sessionDirectoryUpdates()`), a "New" button, and a voice button that initiates
    a call (`CallService.startCall()`).
 
 ## Requirements

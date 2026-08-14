@@ -149,12 +149,19 @@ final class ChatService: ObservableObject {
             // visitor's first message, and opening one here just to read a
             // past conversation would attach a participant and start a chat
             // nobody has spoken in. The session goes live on the first send.
-            let history = try await Task.detached {
-                try client.getSession(id: id)
-            }.value
-            sessionsState[id] = SessionUIState(messages: history.history)
-            currentSessionId = id
-            adoptDrafts(into: id)
+            for try await update in try client.sessionUpdates(id: id) {
+                switch update {
+                case .snapshot(let snapshot):
+                    var state = sessionsState[id] ?? SessionUIState()
+                    state.messages = snapshot.session.history
+                    sessionsState[id] = state
+                    currentSessionId = id
+                    adoptDrafts(into: id)
+                case .refreshFailed(let error, let cachedSnapshotEmitted):
+                    if !cachedSnapshotEmitted { throw error }
+                    self.error = "Couldn't refresh conversation: \(error.localizedDescription)"
+                }
+            }
             // Refresh sidebar so the now-open session shows up.
             try? await sdk?.getSessions()
         } catch {

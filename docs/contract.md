@@ -36,9 +36,22 @@ registers the cross-repository contracts that must change and validate together.
   `workspace/apps/sdk/session/include/session_bridge.h`; reciprocal producer
   registration is in `workspace/apps/sdk/CONTRACT.md` and
   `workspace/apps/sdk/session/docs/contract.md`.
+- The wrapper supplies only
+  `Application Support/ai.origon.sdk/chat-cache-v1` when caching is enabled
+  (the default), excludes the directory tree from backup, and applies
+  complete-until-first-authentication Data Protection on iOS. Rust owns every
+  descendant and opaque identity scope. `sessionUpdates(id:policy:)` and
+  `sessionDirectoryUpdates(policy:)` are finite two-slot
+  `AsyncThrowingStream`s: cache may arrive first, then one authoritative
+  network snapshot or typed refresh failure, then completion. Blocking native
+  `next` runs on a detached worker; termination cancels exactly once and free
+  follows the exiting call. `close()` cancels/joins all native loaders and cache
+  writers before destroying the client. Static `clearAllChatCaches()` is called only after all
+  clients close and returns after the fail-closed root rename.
 - Passive foreground restore calls `restoreActiveChats()` and never takes over
   another installation. Explicit history navigation and a push tap call
-  `openChat(sessionId:takeover:)`; takeover is user intent. The wrapper/core
+  `openChat(sessionId:intent:)`; only `.explicitNavigation` and `.notification`
+  authorize takeover. The wrapper/core
   manager remains the sole per-session operation owner.
 - Notification enablement governs push registration/delivery only; it never disables
   list/history/start or same-install restore. Anonymous continuity and push are scoped

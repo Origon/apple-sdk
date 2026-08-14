@@ -61,6 +61,30 @@ public enum APNSEnvironment: String, Sendable {
     case production
 }
 
+/// Durable transcript caching is enabled by default. Disable it only when the
+/// host deliberately requires network-only persistence semantics.
+public enum ChatCachePolicy: Sendable, Equatable {
+    case enabled
+    case disabled
+}
+
+public enum SessionLoadPolicy: Int32, Sendable, Equatable {
+    case cacheThenNetwork = 0
+    case networkOnly = 1
+    case cacheOnly = 2
+}
+
+public enum SessionLoadSource: String, Codable, Sendable, Equatable {
+    case cache
+    case network
+}
+
+public enum ChatAccessIntent: Int32, Sendable, Equatable {
+    case passive = 0
+    case explicitNavigation = 1
+    case notification = 2
+}
+
 // MARK: - Configuration / requests
 
 /// Configuration for creating an `OrigonClient`.
@@ -76,17 +100,20 @@ public struct ClientConfig: Sendable {
     /// `JSONSerialization` before crossing the native boundary; pass
     /// any valid top-level JSON object.
     public let attributes: [String: Any]?
+    public let chatCachePolicy: ChatCachePolicy
 
     public init(
         endpoint: String,
         token: String? = nil,
         userId: String? = nil,
-        attributes: [String: Any]? = nil
+        attributes: [String: Any]? = nil,
+        chatCachePolicy: ChatCachePolicy = .enabled
     ) {
         self.endpoint = endpoint
         self.token = token
         self.userId = userId
         self.attributes = attributes
+        self.chatCachePolicy = chatCachePolicy
     }
 }
 
@@ -607,6 +634,30 @@ public struct SessionHistory: Codable, Sendable {
         self.history = try c.decodeIfPresent([Message].self, forKey: .history) ?? []
         self.control = try c.decodeIfPresent(SessionControl.self, forKey: .control) ?? .ai
     }
+}
+
+public struct SessionSnapshot: Codable, Sendable {
+    public let source: SessionLoadSource
+    public let authoritative: Bool
+    public let refreshedAt: UInt64
+    public let session: SessionHistory
+}
+
+public struct SessionDirectorySnapshot: Codable, Sendable {
+    public let source: SessionLoadSource
+    public let authoritative: Bool
+    public let refreshedAt: UInt64
+    public let sessions: [SessionSummary]
+}
+
+public enum SessionLoadUpdate: Sendable {
+    case snapshot(SessionSnapshot)
+    case refreshFailed(error: OrigonError, cachedSnapshotEmitted: Bool)
+}
+
+public enum SessionDirectoryLoadUpdate: Sendable {
+    case snapshot(SessionDirectorySnapshot)
+    case refreshFailed(error: OrigonError, cachedSnapshotEmitted: Bool)
 }
 
 // MARK: - Disconnect reason
