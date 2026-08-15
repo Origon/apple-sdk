@@ -423,7 +423,6 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `uploadAttachment(path:\|data:\|url:)` | `async`; upload a file (`path:` / `data:` / `url:` overloads) against the client's widget and return the server-issued `Attachment`. No session required. Reports progress via `onProgress`. |
 | `deleteAttachment(attachmentId:)` | `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). No session required. |
 | `activeSessions()` | Snapshot of every active session. |
-| `getSessions()` / `getSession(id:)` | Temporary compatibility reads retained until the coordinated app hardcut. Prefer the finite loaders. |
 | `setAttributes(_:)` | Replace session-level attributes injected as `data.attributes` on `startSession`. |
 | `OrigonClient.registerForPushNotifications(deviceToken:environment:)` | Static. Register an APNs device token (buffered until init; auto-detects environment). |
 | `OrigonClient.unregisterForPushNotifications()` | Static. Remove this device's push registration (e.g. on logout). |

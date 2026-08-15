@@ -15,6 +15,47 @@ if [[ ! -d "$artifact" ]]; then
   exit 2
 fi
 
+header_count=0
+while IFS= read -r header; do
+  ((header_count += 1))
+  for retired in session_client_get_sessions session_client_get_session \
+    session_client_open_chat_with_intent; do
+    if grep -q "$retired" "$header"; then
+      echo "$header still declares retired $retired" >&2
+      exit 1
+    fi
+  done
+  grep -q 'session_client_open_chat' "$header" || {
+    echo "$header is missing session_client_open_chat" >&2
+    exit 1
+  }
+done < <(find "$artifact" -type f -name session_bridge.h -print)
+if (( header_count == 0 )); then
+  echo "XCFramework has no session_bridge.h" >&2
+  exit 2
+fi
+
+library_count=0
+while IFS= read -r library; do
+  ((library_count += 1))
+  symbols="$(strings "$library")"
+  grep -Eq '^_?session_client_open_chat$' <<<"$symbols" || {
+    echo "$library is missing session_client_open_chat" >&2
+    exit 1
+  }
+  for retired in session_client_get_sessions session_client_get_session \
+    session_client_open_chat_with_intent; do
+    ! grep -Eq "^_?${retired}$" <<<"$symbols" || {
+      echo "$library still exports retired $retired" >&2
+      exit 1
+    }
+  done
+done < <(find "$artifact" -type f -name libsession.a -print)
+if (( library_count == 0 )); then
+  echo "XCFramework has no libsession.a slices" >&2
+  exit 2
+fi
+
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo"

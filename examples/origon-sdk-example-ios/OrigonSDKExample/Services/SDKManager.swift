@@ -104,7 +104,7 @@ final class SDKManager: ObservableObject {
 
     /// Refresh the cached session list from the SDK. Used by the sidebar
     /// (chat history) and any future call-history surface.
-    func getSessions() async throws {
+    func refreshSessions() async throws {
         guard let client else { return }
         isLoadingSessions = true
         do {

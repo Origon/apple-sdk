@@ -163,7 +163,7 @@ final class ChatService: ObservableObject {
                 }
             }
             // Refresh sidebar so the now-open session shows up.
-            try? await sdk?.getSessions()
+            try? await sdk?.refreshSessions()
         } catch {
             self.error = "Failed to open session: \(error.localizedDescription)"
         }
@@ -560,7 +560,7 @@ final class ChatService: ObservableObject {
                     }
                     self.sessionStartTask = nil
                 }
-                try? await self?.sdk?.getSessions()
+                try? await self?.sdk?.refreshSessions()
                 return response.sessionId
             } catch {
                 // Clear the cached task on failure so the next caller

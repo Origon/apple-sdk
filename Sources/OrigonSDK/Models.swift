@@ -563,7 +563,7 @@ public struct Contact: Codable, Sendable, Equatable {
     }
 }
 
-/// Element of the array returned by `OrigonClient.getSessions`.
+/// Element of a session-directory snapshot.
 public struct SessionSummary: Codable, Sendable {
     public let sessionId: String
     public let subject: String
@@ -618,7 +618,7 @@ public struct RestoreResult: Sendable {
     }
 }
 
-/// Returned by `OrigonClient.getSession`.
+/// Authoritative transcript history carried by a session snapshot.
 public struct SessionHistory: Codable, Sendable {
     public let history: [Message]
     /// Who is currently driving the session.

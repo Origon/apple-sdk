@@ -602,26 +602,6 @@ public final class OrigonClient: @unchecked Sendable {
         }.value
     }
 
-    /// `GET /sessions` — prior sessions for the configured `userId`.
-    public func getSessions() throws -> [SessionSummary] {
-        var err = SessionError()
-        var jsonPtr: UnsafeMutablePointer<CChar>?
-        let rc = try withHandle { session_client_get_sessions($0, &jsonPtr, &err) }
-        if rc != 0 { throw OrigonError.consume(&err) }
-        guard let jsonPtr else { return [] }
-        defer { session_string_free(jsonPtr) }
-        let json = String(cString: jsonPtr)
-        guard let data = json.data(using: .utf8) else { return [] }
-        do {
-            return try JSONDecoder().decode([SessionSummary].self, from: data)
-        } catch {
-            throw OrigonError(
-                kind: .other,
-                message: "decode getSessions: \(error.localizedDescription)"
-            )
-        }
-    }
-
     /// Passively attach every retained active chat, newest first. This never
     /// replaces another installation's active visitor stream.
     public func restoreActiveChats() throws -> [RestoreResult] {
@@ -643,19 +623,6 @@ public final class OrigonClient: @unchecked Sendable {
         }
     }
 
-    /// Open one retained chat. Use takeover only for explicit navigation or a
-    /// notification tap; background restore must use `restoreActiveChats()`.
-    public func openChat(sessionId: String, takeover: Bool) throws -> StartSessionResponse {
-        var err = SessionError()
-        var response = SessionStartResponse()
-        let rc = try withHandle { handle in
-            sessionId.withCString {
-                session_client_open_chat(handle, $0, takeover ? 1 : 0, &response, &err)
-            }
-        }
-        return try Self.consumeStartResponse(rc, &response, &err)
-    }
-
     /// Open one retained chat with named user authority. Passive restore must
     /// use `.passive`; explicit navigation and notification taps are the only
     /// takeover-authorizing intents.
@@ -667,38 +634,12 @@ public final class OrigonClient: @unchecked Sendable {
         var response = SessionStartResponse()
         let rc = try withHandle { handle in
             sessionId.withCString {
-                session_client_open_chat_with_intent(
+                session_client_open_chat(
                     handle, $0, intent.rawValue, &response, &err
                 )
             }
         }
         return try Self.consumeStartResponse(rc, &response, &err)
-    }
-
-    /// `GET /session/<id>` — history for one session.
-    public func getSession(id: String) throws -> SessionHistory {
-        var err = SessionError()
-        var jsonPtr: UnsafeMutablePointer<CChar>?
-        let rc = try withHandle { handle in
-            id.withCString {
-                session_client_get_session(handle, $0, &jsonPtr, &err)
-            }
-        }
-        if rc != 0 { throw OrigonError.consume(&err) }
-        guard let jsonPtr else { return SessionHistory(history: []) }
-        defer { session_string_free(jsonPtr) }
-        let json = String(cString: jsonPtr)
-        guard let data = json.data(using: .utf8) else {
-            return SessionHistory(history: [])
-        }
-        do {
-            return try JSONDecoder().decode(SessionHistory.self, from: data)
-        } catch {
-            throw OrigonError(
-                kind: .other,
-                message: "decode getSession: \(error.localizedDescription)"
-            )
-        }
     }
 
     /// Snapshot of every active session.

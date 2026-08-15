@@ -230,7 +230,7 @@ struct RootChatView: View {
 
     private func boot() {
         guard !sdk.isReady else {
-            Task { try? await sdk.getSessions() }
+            Task { try? await sdk.refreshSessions() }
             return
         }
 
@@ -241,7 +241,7 @@ struct RootChatView: View {
         bootTask = Task {
             do {
                 try await sdk.initialize(endpoint: endpoint)
-                try await sdk.getSessions()
+                try await sdk.refreshSessions()
                 await settleBreathingAndExit()
             } catch {
                 await settleBreathingAndExit()
