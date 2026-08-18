@@ -148,8 +148,8 @@ import OrigonSDK
 OrigonClient.initLogging()
 
 // 1. Create the client. `userId` is optional — when omitted, the SDK
-//    falls back to the device identifier so anonymous users still get a
-//    stable identity.
+//    uses a random, persisted app-install id as an opaque anonymous id.
+//    It never uses IDFV or another hardware identifier.
 let client = try OrigonClient(config: ClientConfig(
     endpoint: "https://origon.ai/chat/api/<id>",
     userId: "user-123"
@@ -238,6 +238,33 @@ try client.notifyTyping(id: sessionId)
 try client.stopTyping(id: sessionId)
 ```
 
+### Retained chat continuity
+
+Restore is owned by the SDK's session manager. On foreground/bootstrap, call
+the bounded passive restore once; it attaches only rows the server reports as
+`active` and never takes over another installation:
+
+```swift
+let report = try client.restoreActiveChats()
+for result in report where result.status == .activeElsewhere {
+    // Keep the row view-only until the user explicitly opens it.
+}
+
+// History can render cache immediately while the authoritative refresh runs.
+for try await update in try client.sessionUpdates(id: sessionId) {
+    if case .snapshot(let snapshot) = update {
+        render(snapshot.session.history)
+    }
+}
+
+// Named authority keeps passive work from accidentally taking over.
+_ = try client.openChat(sessionId: sessionId, intent: .explicitNavigation)
+```
+
+The host owns app lifecycle triggers; it must not create a second restore loop
+or attach the same id independently. An ended chat remains view-only until the
+ordinary first-send reopen path runs.
+
 Polling chat events:
 
 ```swift
@@ -302,6 +329,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Required only when a Notification Service Extension shares the
+        // endpoint-generation gate with the app.
+        OrigonClient.configurePushNotifications(
+            appGroupIdentifier: "group.com.example.app"
+        )
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
                 guard granted else { return }
@@ -320,8 +352,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 // On logout:
-OrigonClient.unregisterForPushNotifications()
+try client.unregisterPushNotificationsForLogout() // completes before release
 ```
+
+The static `OrigonClient.unregisterForPushNotifications()` remains the
+fire-and-forget convenience. Use the instance method above when logout will
+immediately release the client.
 
 `registerForPushNotifications(deviceToken:environment:)` is a **static**
 method and is safe to call **before** the client is initialized — the
@@ -329,6 +365,26 @@ token is buffered and sent automatically once `OrigonClient` is created.
 It is also safe to call repeatedly (e.g. on APNs token refresh); the
 latest token wins. The call returns immediately and runs the network
 request in the background; failures are logged, not thrown.
+
+Each successful registration persists the opaque server generation. A
+Notification Service Extension must compare the incoming
+`endpointGeneration` before showing the optional human-agent `title` or
+`preview`; use
+`OrigonPushNotification.contentForDelivery` as shown in
+`examples/notification-service-extension/NotificationService.swift`. On an
+exact match, the helper copies each present, nonblank field over the APNs alert.
+An absent or blank `title` keeps the APNs title. A stale or missing generation
+keeps the original provider/APNs title and body unchanged—the SDK never invents
+fallback branding. Foreground delegates may instead suppress the notification
+by returning no presentation options when
+`OrigonPushNotification.isCurrent(...)` is false. On a matching notification
+tap, read `OrigonPushNotification.sessionId(...)` and call
+`openChat(sessionId:intent: .notification)`.
+
+Call registration on every APNs token refresh. On logout, unregister before
+discarding the client and clear delivered notifications in the host app. An
+uninstall cannot call logout; APNs invalid-token feedback and the server's
+90-day endpoint TTL perform eventual cleanup.
 
 **APNs environment.** A device token is bound to the environment of the
 build that produced it (development builds → sandbox; App Store /
@@ -350,6 +406,13 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `init(config:)` | Create a client. Throws `OrigonError` on connect failure. |
 | `pollEvent()` | Non-blocking poll. Returns `nil` when idle. |
 | `startSession(_:)` | Open a session. Returns `(sessionId, url, token)`. |
+| `restoreActiveChats()` | Passively attach all retained active chats and return per-id outcomes. |
+| `openChat(sessionId:intent:)` | Open a retained chat with named passive, navigation, or notification authority. |
+| `sessionUpdates(id:policy:)` | Finite `AsyncThrowingStream`: optional cache snapshot, one network snapshot or typed refresh failure, then completion. |
+| `sessionDirectoryUpdates(policy:)` | Cache-first finite directory stream with the same ordering. |
+| `cachedSession(s)` / `refreshSession(s)` | Explicit cache-only and authoritative network snapshots. |
+| `removeCachedSession(id:)` / `clearChatCache()` / `pruneChatCache()` | Explicit cache maintenance. |
+| `close()` / `OrigonClient.clearAllChatCaches()` | Close joins native loaders and cache writers; after all clients close, atomically clear every cached scope. |
 | `joinSession(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
 | `endSession(_:)` / `endAllSessions()` | Close a single / every session. |
 | `setMute(id:muted:)` / `setMuteAll(muted:)` | Voice — absolute mute. |
@@ -360,8 +423,6 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `uploadAttachment(path:\|data:\|url:)` | `async`; upload a file (`path:` / `data:` / `url:` overloads) against the client's widget and return the server-issued `Attachment`. No session required. Reports progress via `onProgress`. |
 | `deleteAttachment(attachmentId:)` | `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). No session required. |
 | `activeSessions()` | Snapshot of every active session. |
-| `getSessions()` | `GET /sessions` — list prior sessions for the configured `userId`. |
-| `getSession(id:)` | `GET /session/<id>` — transcript for one session. |
 | `setAttributes(_:)` | Replace session-level attributes injected as `data.attributes` on `startSession`. |
 | `OrigonClient.registerForPushNotifications(deviceToken:environment:)` | Static. Register an APNs device token (buffered until init; auto-detects environment). |
 | `OrigonClient.unregisterForPushNotifications()` | Static. Remove this device's push registration (e.g. on logout). |
@@ -372,7 +433,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 
 | Type | Description |
 | --- | --- |
-| `ClientConfig` | endpoint, optional `token`, optional `userId`, attributes (`[String: Any]?`). The app is authenticated by its **bundle identifier**, resolved automatically from `Bundle.main.bundleIdentifier` and sent as `X-Bundle-Id` on every HTTPS call (register it first — see [Prerequisites](#prerequisites)). `token` is an optional auth token. `userId` defaults to the device identifier (`identifierForVendor`) when omitted. |
+| `ClientConfig` | endpoint, optional `token`, optional `userId`, attributes, and default-on `chatCachePolicy`. The protected cache root is fixed under Application Support and excluded from backup. |
 | `APNSEnvironment` | `.sandbox`, `.production`. Optional override for `registerForPushNotifications(deviceToken:environment:)`; auto-detected from the provisioning profile when omitted. |
 | `Channel` | `.chat`, `.voice`. |
 | `SessionControl` | `.ai`, `.user`. |
@@ -391,7 +452,8 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `Message` | typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`. |
 | `Attachment` | uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`. |
 | `UploadProgress` | `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback. |
-| `Contact`, `SessionSummary`, `SessionHistory` | typed shapes returned by `getSessions()` / `getSession(id:)`. |
+| `SessionLoadPolicy`, `SessionSnapshot`, `SessionDirectorySnapshot`, load updates | Typed cache/network source, authority, refresh time, snapshots, and refresh failures. |
+| `Contact`, `SessionSummary`, `SessionHistory` | typed directory/transcript shapes carried by snapshots. |
 | `SendMessagePayload` | `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`). |
 | `OrigonError` | structured error with `kind`, `statusCode`, `code`, `message`. |
 

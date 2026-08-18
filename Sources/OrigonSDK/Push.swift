@@ -4,6 +4,12 @@ import os
 // MARK: - Public push API
 
 extension OrigonClient {
+    /// Configure an App Group used to mirror the current endpoint generation
+    /// into a Notification Service Extension. Call before registering a token.
+    public static func configurePushNotifications(appGroupIdentifier: String) {
+        PushRegistrar.shared.configure(appGroupIdentifier: appGroupIdentifier)
+    }
+
     /// Register this device's APNs token so the backend can deliver push
     /// notifications.
     ///
@@ -46,6 +52,18 @@ extension OrigonClient {
     public static func unregisterForPushNotifications() {
         PushRegistrar.shared.unregister()
     }
+
+    /// Clear local preview authority immediately without contacting the backend.
+    /// Hosts call this during logout even when no initialized client exists.
+    public static func clearPushNotificationAuthority() {
+        PushRegistrar.shared.clearAuthority()
+    }
+
+    /// Generation-bound logout gate. Completes before returning, so the client
+    /// may be released immediately afterwards.
+    public func unregisterPushNotificationsForLogout() throws {
+        try PushRegistrar.shared.unregisterSynchronously(client: self)
+    }
 }
 
 // MARK: - Registrar
@@ -74,6 +92,10 @@ final class PushRegistrar: @unchecked Sendable {
     /// later attach.
     private var bufferedToken: String?
     private var bufferedEnvironment: APNSEnvironment?
+    private var appGroupIdentifier: String?
+    /// Logout closes registration until a different client attaches. This
+    /// drops late APNs callbacks still targeting the old identity.
+    private var authoritySuspended = false
 
     /// APNs environment for this build. Constant for the process lifetime,
     /// so it is resolved once on first use.
@@ -88,16 +110,31 @@ final class PushRegistrar: @unchecked Sendable {
     func attach(_ client: OrigonClient) {
         queue.async {
             self.client = client
-            guard let token = self.bufferedToken else { return }
+            self.authoritySuspended = false
+            let persisted = PushRegistrationStore.registration()
+            guard let token = self.bufferedToken ?? persisted?.token else { return }
+            let environment = self.bufferedEnvironment
+                ?? persisted.flatMap { APNSEnvironment(rawValue: $0.environment) }
             self.log.debug("flushing buffered push token after init")
-            self.sendRegister(client: client, token: token, environment: self.bufferedEnvironment)
+            self.sendRegister(client: client, token: token, environment: environment)
         }
     }
 
     // MARK: Registration (called by the public API)
 
+    func configure(appGroupIdentifier: String) {
+        queue.async {
+            self.appGroupIdentifier = appGroupIdentifier
+            PushRegistrationStore.mirrorCurrentGeneration(to: appGroupIdentifier)
+        }
+    }
+
     func register(token: String, environment: APNSEnvironment?) {
         queue.async {
+            guard !self.authoritySuspended else {
+                self.log.debug("push authority suspended; dropping token callback")
+                return
+            }
             let resolved = environment ?? self.detectedEnvironment
             self.bufferedToken = token
             self.bufferedEnvironment = resolved
@@ -111,24 +148,77 @@ final class PushRegistrar: @unchecked Sendable {
 
     func unregister() {
         queue.async {
+            self.authoritySuspended = true
             self.bufferedToken = nil
             self.bufferedEnvironment = nil
+            guard let registration = PushRegistrationStore.registration() else {
+                PushRegistrationStore.clear(appGroupIdentifier: self.appGroupIdentifier)
+                self.log.debug("no persisted push registration; nothing to unregister")
+                return
+            }
             guard let client = self.client else {
-                self.log.debug("no active client; nothing to unregister")
+                self.log.debug("no active client; retaining registration for logout retry")
                 return
             }
             do {
-                try client.unregisterPush()
+                try client.unregisterPush(
+                    token: registration.token,
+                    provider: "apns",
+                    environment: registration.environment,
+                    generation: registration.generation
+                )
+                PushRegistrationStore.clear(appGroupIdentifier: self.appGroupIdentifier)
             } catch {
                 self.log.error("unregisterForPushNotifications failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
 
+    func unregisterSynchronously(client: OrigonClient) throws {
+        try queue.sync {
+            authoritySuspended = true
+            bufferedToken = nil
+            bufferedEnvironment = nil
+            guard let registration = PushRegistrationStore.registration() else {
+                PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier)
+                return
+            }
+            defer { PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier) }
+            try client.unregisterPush(
+                token: registration.token,
+                provider: "apns",
+                environment: registration.environment,
+                generation: registration.generation
+            )
+        }
+    }
+
+    func clearAuthority() {
+        queue.sync {
+            authoritySuspended = true
+            bufferedToken = nil
+            bufferedEnvironment = nil
+            PushRegistrationStore.clear(appGroupIdentifier: appGroupIdentifier)
+        }
+    }
+
     /// Must be called on `queue`.
     private func sendRegister(client: OrigonClient, token: String, environment: APNSEnvironment?) {
         do {
-            try client.registerPush(token: token, provider: "apns", environment: environment?.rawValue)
+            let resolvedEnvironment = environment ?? detectedEnvironment
+            let generation = try client.registerPush(
+                token: token,
+                provider: "apns",
+                environment: resolvedEnvironment.rawValue
+            )
+            PushRegistrationStore.save(
+                PushRegistration(
+                    token: token,
+                    environment: resolvedEnvironment.rawValue,
+                    generation: generation
+                ),
+                appGroupIdentifier: appGroupIdentifier
+            )
         } catch {
             self.log.error("registerForPushNotifications failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -166,5 +256,44 @@ final class PushRegistrar: @unchecked Sendable {
             return .production
         }
         return apsEnvironment == "production" ? .production : .sandbox
+    }
+}
+
+struct PushRegistration: Codable {
+    let token: String
+    let environment: String
+    let generation: String
+}
+
+enum PushRegistrationStore {
+    static let generationKey = "ai.origon.sdk.push.endpointGeneration"
+    private static let registrationKey = "ai.origon.sdk.push.registration"
+
+    static func registration() -> PushRegistration? {
+        guard let data = UserDefaults.standard.data(forKey: registrationKey) else { return nil }
+        return try? JSONDecoder().decode(PushRegistration.self, from: data)
+    }
+
+    static func save(_ registration: PushRegistration, appGroupIdentifier: String?) {
+        if let data = try? JSONEncoder().encode(registration) {
+            UserDefaults.standard.set(data, forKey: registrationKey)
+        }
+        UserDefaults.standard.set(registration.generation, forKey: generationKey)
+        if let appGroupIdentifier {
+            UserDefaults(suiteName: appGroupIdentifier)?.set(registration.generation, forKey: generationKey)
+        }
+    }
+
+    static func clear(appGroupIdentifier: String?) {
+        UserDefaults.standard.removeObject(forKey: registrationKey)
+        UserDefaults.standard.removeObject(forKey: generationKey)
+        if let appGroupIdentifier {
+            UserDefaults(suiteName: appGroupIdentifier)?.removeObject(forKey: generationKey)
+        }
+    }
+
+    static func mirrorCurrentGeneration(to appGroupIdentifier: String) {
+        guard let generation = UserDefaults.standard.string(forKey: generationKey) else { return }
+        UserDefaults(suiteName: appGroupIdentifier)?.set(generation, forKey: generationKey)
     }
 }

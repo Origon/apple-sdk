@@ -13,7 +13,7 @@ import OrigonSDK
 /// - Own the `CallService` and `ChatService` instances and expose them so
 ///   the UI can reach `sdk.call` / `sdk.chat`.
 /// - Host the shared session list (used by both call and chat) and the
-///   `getSessions()` read.
+///   cache-first directory stream.
 /// - Drain the SDK's event channel on a 50 ms timer and broadcast every
 ///   `ClientEvent` to subscribers via `events`. Consumers (e.g.
 ///   `CallService`) filter by `sessionId`.
@@ -95,6 +95,7 @@ final class SDKManager: ObservableObject {
         stopPolling()
         chat.destroy()
         sessions = []
+        client?.close()
         client = nil
         isReady = false
     }
@@ -103,14 +104,18 @@ final class SDKManager: ObservableObject {
 
     /// Refresh the cached session list from the SDK. Used by the sidebar
     /// (chat history) and any future call-history surface.
-    func getSessions() async throws {
+    func refreshSessions() async throws {
         guard let client else { return }
         isLoadingSessions = true
         do {
-            let result = try await Task.detached {
-                try client.getSessions()
-            }.value
-            sessions = result
+            for try await update in try client.sessionDirectoryUpdates() {
+                switch update {
+                case .snapshot(let snapshot):
+                    sessions = snapshot.sessions
+                case .refreshFailed(let error, _):
+                    throw error
+                }
+            }
             isLoadingSessions = false
         } catch {
             isLoadingSessions = false

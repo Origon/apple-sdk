@@ -19,7 +19,25 @@ let package = Package(
         .target(
             name: "OrigonSDK",
             dependencies: ["COrigonSDK"],
-            path: "Sources/OrigonSDK"
+            path: "Sources/OrigonSDK",
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("AVFAudio", .when(platforms: [.iOS])),
+                .linkedFramework("AudioToolbox", .when(platforms: [.iOS])),
+                .linkedFramework("CoreFoundation", .when(platforms: [.macOS])),
+                .linkedFramework("AVFoundation", .when(platforms: [.macOS])),
+                .linkedFramework("AudioToolbox", .when(platforms: [.macOS])),
+                .linkedFramework("CoreAudio", .when(platforms: [.macOS])),
+                .linkedFramework("CoreMedia", .when(platforms: [.macOS])),
+                .linkedFramework("CoreVideo", .when(platforms: [.macOS])),
+                .linkedFramework("VideoToolbox", .when(platforms: [.macOS])),
+                .linkedFramework("ScreenCaptureKit", .when(platforms: [.macOS])),
+            ]
+        ),
+        .testTarget(
+            name: "OrigonSDKTests",
+            dependencies: ["OrigonSDK"],
+            path: "Tests/OrigonSDKTests"
         ),
     ]
 )
