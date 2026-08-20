@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A0A0A0A0A0A0A0A0A0A0001 /* ChatSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */; };
+		0A0A0A0A0A0A0A0A0A0A0003 /* ChatSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */; };
+		0A0A0A0A0A0A0A0A0A0A0005 /* OrigonSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */; };
 		0099F70D8F8B0EA88AD6C1E5 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67549FFD7794AEB5D310656A /* Theme.swift */; };
 		05F7D9D941441B5023BBAF58 /* CallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75CA11CB74A69A691483481 /* CallService.swift */; };
 		18C8392C92173125819024E9 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 344EF90A5D01E5964AE42A71 /* RootView.swift */; };
@@ -36,7 +39,20 @@
 		F16FBF031F5455CA1766F53E /* ChatService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59464B98E2CC335922336BF7 /* ChatService.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		0A0A0A0A0A0A0A0A0A0A0006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 213EB7F75003F30FBD427E25 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FB14766CDA700D4333CEEA77;
+			remoteInfo = OrigonSDKExample;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionClient.swift; sourceTree = "<group>"; };
+		0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionClientTests.swift; sourceTree = "<group>"; };
+		0A0A0A0A0A0A0A0A0A0A0007 /* OrigonSDKExampleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OrigonSDKExampleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0508D7E6D314D3D2DF860035 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		159D087F99F38EEEB06AFF23 /* AppButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppButtons.swift; sourceTree = "<group>"; };
 		1F92EA26A75F1116435324AE /* SDKManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKManager.swift; sourceTree = "<group>"; };
@@ -68,6 +84,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		0A0A0A0A0A0A0A0A0A0A0008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A0A0A0A0A0A0A0A0A0A0005 /* OrigonSDK in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B51FAEDEE732F4576A00B025 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -114,6 +138,7 @@
 			isa = PBXGroup;
 			children = (
 				F0F2AB8CA1917FFF5A4A09FC /* OrigonSDKExample */,
+				0A0A0A0A0A0A0A0A0A0A0009 /* OrigonSDKExampleTests */,
 				FE32521E82A5F747A9C09E3D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -122,6 +147,7 @@
 			isa = PBXGroup;
 			children = (
 				C75CA11CB74A69A691483481 /* CallService.swift */,
+				0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */,
 				59464B98E2CC335922336BF7 /* ChatService.swift */,
 				1F92EA26A75F1116435324AE /* SDKManager.swift */,
 			);
@@ -149,13 +175,42 @@
 			isa = PBXGroup;
 			children = (
 				81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */,
+				0A0A0A0A0A0A0A0A0A0A0007 /* OrigonSDKExampleTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		0A0A0A0A0A0A0A0A0A0A0009 /* OrigonSDKExampleTests */ = {
+			isa = PBXGroup;
+			children = (
+				0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */,
+			);
+			path = OrigonSDKExampleTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0A0A0A0A0A0A0A0A0A0A0010 /* OrigonSDKExampleTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A0A0A0A0A0A0A0A0A0A0011 /* Build configuration list for PBXNativeTarget "OrigonSDKExampleTests" */;
+			buildPhases = (
+				0A0A0A0A0A0A0A0A0A0A0012 /* Sources */,
+				0A0A0A0A0A0A0A0A0A0A0008 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0A0A0A0A0A0A0A0A0A0A0013 /* PBXTargetDependency */,
+			);
+			name = OrigonSDKExampleTests;
+			packageProductDependencies = (
+				0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */,
+			);
+			productName = OrigonSDKExampleTests;
+			productReference = 0A0A0A0A0A0A0A0A0A0A0007 /* OrigonSDKExampleTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		FB14766CDA700D4333CEEA77 /* OrigonSDKExample */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3C2FCD824A8A2A38C58D68EC /* Build configuration list for PBXNativeTarget "OrigonSDKExample" */;
@@ -185,6 +240,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
+					0A0A0A0A0A0A0A0A0A0A0010 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = FB14766CDA700D4333CEEA77;
+					};
 					FB14766CDA700D4333CEEA77 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -208,6 +267,7 @@
 			projectRoot = "";
 			targets = (
 				FB14766CDA700D4333CEEA77 /* OrigonSDKExample */,
+				0A0A0A0A0A0A0A0A0A0A0010 /* OrigonSDKExampleTests */,
 			);
 		};
 /* End PBXProject section */
@@ -224,6 +284,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		0A0A0A0A0A0A0A0A0A0A0012 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A0A0A0A0A0A0A0A0A0A0003 /* ChatSessionClientTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C0DFE403E2CEBF4C15A26B36 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -233,6 +301,7 @@
 				05F7D9D941441B5023BBAF58 /* CallService.swift in Sources */,
 				52093574E157380D4DF3B249 /* CallView.swift in Sources */,
 				F16FBF031F5455CA1766F53E /* ChatService.swift in Sources */,
+				0A0A0A0A0A0A0A0A0A0A0001 /* ChatSessionClient.swift in Sources */,
 				528959564C4692C52A2FBD2F /* ChatView.swift in Sources */,
 				3ED610AD114DC23D65709887 /* Constants.swift in Sources */,
 				DB456E88363BBEE41DE9C80D /* EdgePanGesture.swift in Sources */,
@@ -258,7 +327,45 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		0A0A0A0A0A0A0A0A0A0A0013 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FB14766CDA700D4333CEEA77 /* OrigonSDKExample */;
+			targetProxy = 0A0A0A0A0A0A0A0A0A0A0006 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		0A0A0A0A0A0A0A0A0A0A0014 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = origon.example.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OrigonSDKExample.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OrigonSDKExample";
+			};
+			name = Debug;
+		};
+		0A0A0A0A0A0A0A0A0A0A0015 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = origon.example.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OrigonSDKExample.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OrigonSDKExample";
+			};
+			name = Release;
+		};
 		2EE337A1EBF05F8104BFFC36 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -417,6 +524,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		0A0A0A0A0A0A0A0A0A0A0011 /* Build configuration list for PBXNativeTarget "OrigonSDKExampleTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A0A0A0A0A0A0A0A0A0A0014 /* Debug */,
+				0A0A0A0A0A0A0A0A0A0A0015 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		3C2FCD824A8A2A38C58D68EC /* Build configuration list for PBXNativeTarget "OrigonSDKExample" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -449,6 +565,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 997A404525145A84B77EDD9E /* XCRemoteSwiftPackageReference "apple-sdk" */;
+			productName = OrigonSDK;
+		};
 		00A08C26CD60E0DE7F92C052 /* OrigonSDK */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 997A404525145A84B77EDD9E /* XCRemoteSwiftPackageReference "apple-sdk" */;

@@ -80,12 +80,11 @@ perl -0pi -e '
    {isa = XCLocalSwiftPackageReference;\n\t\t\trelativePath = ../..;}s
 ' "$project"
 
+destination="${ORIGON_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 16}"
 xcodebuild \
   -project "$scratch/repo/examples/origon-sdk-example-ios/OrigonSDKExample.xcodeproj" \
   -scheme OrigonSDKExample \
-  -destination 'generic/platform=iOS Simulator' \
+  -destination "$destination" \
   -derivedDataPath "$scratch/DerivedData" \
   CODE_SIGNING_ALLOWED=NO \
-  ARCHS=arm64 \
-  ONLY_ACTIVE_ARCH=YES \
-  build
+  test

@@ -30,6 +30,17 @@ From there:
 2. Pick a destination (simulator or device).
 3. Hit ⌘R.
 
+The shared scheme includes the example-owned policy test target. Run it on the
+same simulator from Xcode with ⌘U, or from a terminal:
+
+```bash
+xcodebuild test \
+  -project OrigonSDKExample.xcodeproj \
+  -scheme OrigonSDKExample \
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  CODE_SIGNING_ALLOWED=NO
+```
+
 On first launch the app shows the Endpoint screen. Enter your Origon endpoint
 URL (e.g. `https://api.example.com`) and continue — the app stays signed in
 to that endpoint across relaunches. To switch endpoints, open the sidebar →
@@ -83,15 +94,15 @@ a usage string.
 
 The `OrigonSDK` Swift package is consumed via SPM from
 [github.com/Origon/apple-sdk](https://github.com/Origon/apple-sdk). The version
-rule is **Up to Next Minor Version** from `0.1.0`, so it tracks newer
-`0.1.x` releases automatically. To change it, select the project in Xcode →
+rule is **Up to Next Major Version** from `0.3.0`. To change it, select the project in Xcode →
 **Package Dependencies** → double-click the `apple-sdk` row and edit the rule.
 
 ## Scope notes
 
 The example authenticates **by endpoint only** — it never signs a person in, so
-there is no login, profile, or account screen. It carries no test target; the
-shipped Origon apps hold the regression coverage for these surfaces.
+there is no login, profile, or account screen. Its test target owns regression
+coverage for policy copied into the example; SDK package tests remain supporting
+coverage for the wrapper itself.
 
 There are no screenshots, deliberately. A screenshot in a repo goes stale the
 moment the UI moves, and this app is meant to be read and run.

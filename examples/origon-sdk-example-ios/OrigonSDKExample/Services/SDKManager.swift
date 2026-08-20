@@ -28,6 +28,10 @@ final class SDKManager: ObservableObject {
 
     private(set) var client: OrigonClient?
 
+    /// Narrow, fakeable surface for chat-selection policy. Call and media
+    /// behavior continues to use the concrete client.
+    var chatClient: (any ChatSessionClient)? { client }
+
     let call: CallService
     let chat: ChatService
 

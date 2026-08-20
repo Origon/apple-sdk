@@ -142,14 +142,17 @@ final class ChatService: ObservableObject {
             adoptDrafts(into: id)
             return
         }
-        guard let client = sdk?.client else { return }
+        guard let client = sdk?.chatClient else { return }
         do {
             // View-only open: fetch the history and render it, but do NOT
             // call `startChat` — that verb exists to open a session WITH the
             // visitor's first message, and opening one here just to read a
             // past conversation would attach a participant and start a chat
             // nobody has spoken in. The session goes live on the first send.
-            for try await update in try client.sessionUpdates(id: id) {
+            for try await update in try client.sessionUpdates(
+                id: id,
+                policy: .cacheThenNetwork
+            ) {
                 switch update {
                 case .snapshot(let snapshot):
                     var state = sessionsState[id] ?? SessionUIState()
