@@ -4,6 +4,141 @@ import OrigonSDK
 
 @MainActor
 final class ChatSessionClientTests: XCTestCase {
+    func testCheckpointScopeUsesLengthPrefixedCrossPlatformVector() {
+        let epoch = Data(0..<32)
+        XCTAssertEqual(
+            exampleCheckpointScopeKey(
+                epoch: epoch,
+                endpoint: "https://example.invalid/chat/api/widget",
+                sessionId: "session-α"
+            ),
+            "1d2f8669466130bea1f357b8e8e54c7b05a57421c789e51300c0368053dac18f"
+        )
+        XCTAssertNotEqual(
+            exampleCheckpointScopeKey(epoch: epoch, endpoint: "ab", sessionId: "c"),
+            exampleCheckpointScopeKey(epoch: epoch, endpoint: "a", sessionId: "bc")
+        )
+    }
+
+    func testCheckpointQualificationAnchorAuthorityAndPruning() {
+        let rows = [
+            message("seen", role: .user),
+            message("own", role: .external),
+            message("flow", role: .system),
+            message("joined", role: .user, action: "joined"),
+            message("first-new", role: .user),
+            message("", role: .user),
+        ]
+        XCTAssertEqual(exampleUnreadAnchorMessageId(messages: rows, checkpointId: "seen"), "first-new")
+        XCTAssertNil(exampleUnreadAnchorMessageId(messages: rows, checkpointId: nil))
+        XCTAssertNil(exampleUnreadAnchorMessageId(messages: rows, checkpointId: "evicted"))
+        XCTAssertEqual(exampleNewestEligibleMessageId(rows), "first-new")
+        XCTAssertFalse(exampleShouldAdvanceCheckpoint(
+            authoritative: false, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true, newestEligibleId: "first-new"
+        ))
+        XCTAssertFalse(exampleShouldAdvanceCheckpoint(
+            authoritative: true, sceneForeground: false, detailVisible: true,
+            latestRowVisible: true, newestEligibleId: "first-new"
+        ))
+        XCTAssertTrue(exampleShouldAdvanceCheckpoint(
+            authoritative: true, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true, newestEligibleId: "first-new"
+        ))
+
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let recent = (0..<105).map { index in
+            ExampleChatCheckpoint(
+                version: exampleCheckpointVersion,
+                scopeKey: "key-\(index)",
+                lastSeenMessageId: "message-\(index)",
+                lastAccessedAt: now.addingTimeInterval(TimeInterval(-index))
+            )
+        }
+        let old = ExampleChatCheckpoint(
+            version: exampleCheckpointVersion,
+            scopeKey: "old",
+            lastSeenMessageId: "old",
+            lastAccessedAt: now.addingTimeInterval(-exampleCheckpointMaximumAge - 1)
+        )
+        let future = ExampleChatCheckpoint(
+            version: exampleCheckpointVersion,
+            scopeKey: "future",
+            lastSeenMessageId: "future",
+            lastAccessedAt: now.addingTimeInterval(1)
+        )
+        let pruned = pruneExampleCheckpoints(recent + [old, future], now: now)
+        XCTAssertEqual(pruned.count, exampleCheckpointMaximumEntries)
+        XCTAssertEqual(pruned.first?.scopeKey, "key-0")
+        XCTAssertEqual(pruned.last?.scopeKey, "key-99")
+    }
+
+    func testCheckpointStoreIsAtomicSerializedScopedAndEpochBound() async throws {
+        let epoch = LockedEpochStore(Data(0..<32))
+        let files = LockedCheckpointFiles()
+        let store = ExampleChatCheckpointStore(epochStore: epoch, fileStore: files)
+        let endpoint = "https://example.invalid/chat/api/widget"
+
+        async let first: Void = store.markSeen(
+            endpoint: endpoint, sessionId: "session", messageId: "one",
+            authoritative: true, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true, now: Date(timeIntervalSince1970: 10)
+        )
+        async let second: Void = store.markSeen(
+            endpoint: endpoint, sessionId: "session", messageId: "two",
+            authoritative: true, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true, now: Date(timeIntervalSince1970: 20)
+        )
+        _ = try await (first, second)
+        let stored = try await store.read(
+            endpoint: endpoint, sessionId: "session", now: Date(timeIntervalSince1970: 30)
+        )
+        XCTAssertEqual(stored?.lastSeenMessageId, "two")
+        let otherScope = try await store.read(
+            endpoint: endpoint + "/other", sessionId: "session"
+        )
+        XCTAssertNil(otherScope)
+
+        let raw = try XCTUnwrap(files.data)
+        XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains(endpoint))
+        XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains("session"))
+        XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains(Data(0..<32).base64EncodedString()))
+        XCTAssertGreaterThanOrEqual(files.replaceCount, 3)
+
+        epoch.value = Data(repeating: 0xA5, count: 32)
+        let restored = try await store.read(endpoint: endpoint, sessionId: "session")
+        XCTAssertNil(restored)
+    }
+
+    func testCheckpointFailedReplacementDoesNotAcknowledgeAndCachedRowsDoNotAdvance() async throws {
+        let epoch = LockedEpochStore(Data(repeating: 7, count: 32))
+        let files = LockedCheckpointFiles()
+        let store = ExampleChatCheckpointStore(epochStore: epoch, fileStore: files)
+        try await store.markSeen(
+            endpoint: "endpoint", sessionId: "session", messageId: "seed",
+            authoritative: true, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true
+        )
+        files.failNextReplace = true
+        do {
+            try await store.markSeen(
+                endpoint: "endpoint", sessionId: "session", messageId: "lost",
+                authoritative: true, sceneForeground: true, detailVisible: true,
+                latestRowVisible: true
+            )
+            XCTFail("expected replacement failure")
+        } catch {}
+        let afterFailure = try await store.read(endpoint: "endpoint", sessionId: "session")
+        XCTAssertEqual(afterFailure?.lastSeenMessageId, "seed")
+
+        try await store.markSeen(
+            endpoint: "endpoint", sessionId: "session", messageId: "cached-only",
+            authoritative: false, sceneForeground: true, detailVisible: true,
+            latestRowVisible: true
+        )
+        let afterCached = try await store.read(endpoint: "endpoint", sessionId: "session")
+        XCTAssertEqual(afterCached?.lastSeenMessageId, "seed")
+    }
     func testCachedSnapshotPaintsBeforeNamedAccessAndCannotGrantSend() async throws {
         let fake = FakeLateChatClient()
         let service = ChatService(chatClient: fake)
@@ -346,8 +481,12 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertTrue(predicate(), file: file, line: line)
     }
 
-    private func message(_ id: String) -> Message {
-        Message(id: id, text: id)
+    private func message(
+        _ id: String,
+        role: MessageRole = .external,
+        action: String? = nil
+    ) -> Message {
+        Message(role: role, id: id, text: id, action: action)
     }
 
     private func snapshot(
@@ -363,6 +502,43 @@ final class ChatSessionClientTests: XCTestCase {
         """
         let value = try! JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
         return .snapshot(value)
+    }
+}
+
+private final class LockedEpochStore: ExampleCheckpointEpochStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Data
+
+    init(_ value: Data) { storedValue = value }
+
+    var value: Data {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
+    }
+
+    func loadOrCreateEpoch() throws -> Data { value }
+}
+
+private final class LockedCheckpointFiles: ExampleCheckpointFileStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedData: Data?
+    private var replacements = 0
+    var failNextReplace = false
+
+    var data: Data? { lock.withLock { storedData } }
+    var replaceCount: Int { lock.withLock { replacements } }
+
+    func read() throws -> Data? { data }
+
+    func replace(with data: Data) throws {
+        try lock.withLock {
+            if failNextReplace {
+                failNextReplace = false
+                throw CocoaError(.fileWriteUnknown)
+            }
+            storedData = data
+            replacements += 1
+        }
     }
 }
 
