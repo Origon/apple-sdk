@@ -72,6 +72,7 @@ final class SDKManager: ObservableObject {
         userId: String? = nil,
         token: String? = nil
     ) async throws {
+        chat.clientWillChange()
         // `userId` is optional; when nil the SDK resolves a device
         // identifier internally to use as the fallback.
         let config = ClientConfig(

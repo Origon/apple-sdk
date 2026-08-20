@@ -11,10 +11,19 @@ protocol ChatSessionClient: AnyObject {
         policy: SessionLoadPolicy
     ) throws -> AsyncThrowingStream<SessionLoadUpdate, Error>
 
-    func openChat(
+    func acquireChatAccess(
         sessionId: String,
         intent: ChatAccessIntent
-    ) throws -> StartSessionResponse
+    ) async throws -> StartSessionResponse
 }
 
-extension OrigonClient: ChatSessionClient {}
+extension OrigonClient: ChatSessionClient {
+    func acquireChatAccess(
+        sessionId: String,
+        intent: ChatAccessIntent
+    ) async throws -> StartSessionResponse {
+        try await Task.detached {
+            try self.openChat(sessionId: sessionId, intent: intent)
+        }.value
+    }
+}
