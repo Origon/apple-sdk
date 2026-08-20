@@ -47,6 +47,21 @@ URL (e.g. `https://api.example.com`) and continue — the app stays signed in
 to that endpoint across relaunches. To switch endpoints, open the sidebar →
 **Options → Change Endpoint**.
 
+## Cache and named chat access
+
+The example renders the SDK's finite cache-first directory/transcript streams:
+cached state may paint immediately, followed by one authoritative snapshot or a
+typed refresh failure. Selecting a history row calls
+`openChat(sessionId:intent: .explicitNavigation)` before it can send, so passive
+cache display never acquires takeover authority. `NEW MESSAGES` is an
+example-owned, protected unread checkpoint rather than SDK state.
+
+This sample deliberately does **not** call `restoreActiveChats()` and does not
+auto-return to a recent chat. Those are host-product lifecycle choices, not
+required SDK integration. Apps that want passive retained-chat restore can use
+the API described in the repository's main README while keeping explicit row
+and notification navigation on their named intents.
+
 ## Where to look in the code
 
 If you want to wire OrigonSDK into your own app, start with these files:
@@ -90,6 +105,13 @@ The app requests:
 Both usage descriptions are configured in the app target's Info settings.
 Photo library access goes through `PHPickerViewController` and does not require
 a usage string.
+
+To keep an active voice call running after screen lock or backgrounding, add
+the **Background Modes** capability and select **Audio, AirPlay, and Picture in
+Picture** (`UIBackgroundModes = audio`) on the host app target. The example has
+no push runtime by design; the main README is the complete APNs capability,
+token/generation, Notification Service Extension, tap, logout, uninstall, and
+safe-logging integration guide.
 
 ## SDK version
 

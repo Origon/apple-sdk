@@ -61,7 +61,7 @@ Add the package to your `Package.swift` or through Xcode's package manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Origon/apple-sdk", from: "0.1.0"),
+    .package(url: "https://github.com/Origon/apple-sdk", from: "0.3.0"),
 ]
 ```
 
@@ -78,6 +78,26 @@ Then add `OrigonSDK` to your target's dependencies:
 
 The pre-built `COrigonSDK` XCFramework is downloaded automatically by SPM
 from [GitHub Releases](https://github.com/Origon/apple-sdk/releases).
+
+### Validate a local native build
+
+For SDK development, build the native XCFramework from a sibling `workspace`
+checkout and run both wrapper and example tests against that exact artifact:
+
+```bash
+workspace/apps/sdk/session/scripts/build-xcframework.sh \
+  --output apple-sdk/Frameworks
+cd apple-sdk
+ORIGON_XCFRAMEWORK="$PWD/Frameworks/COrigonSDK.xcframework" \
+ORIGON_IOS_TEST_DESTINATION='platform=iOS Simulator,name=iPhone 17 Pro' \
+  scripts/test-local-xcframework.sh
+```
+
+The script uses a scratch checkout, rewrites only that checkout to the local
+binary target, checks current/retired ABI symbols, runs `swift test`, then runs
+the example-owned XCTest target. The maintained local rig is Apple Silicon and
+therefore exercises the arm64 simulator slice; release packaging still builds
+the device, simulator, and macOS slices declared by the XCFramework.
 
 ## Sample app
 
@@ -157,9 +177,7 @@ let client = try OrigonClient(config: ClientConfig(
 ))
 
 // 2. Start a voice session.
-let response = try client.startSession(
-    StartSessionOptions(channel: .voice)
-)
+let response = try client.startCall(StartCallOptions())
 print("session \(response.sessionId) dialing \(response.url)")
 
 // 3. Drain the event stream.
@@ -205,8 +223,7 @@ try client.endAllSessions()
 ### Joining a pre-obtained session
 
 ```swift
-try client.joinSession(JoinSessionInput(
-    channel: .voice,
+try client.joinCall(JoinInput(
     sessionId: "...",
     url: "...",
     token: "..."
@@ -216,11 +233,16 @@ try client.joinSession(JoinSessionInput(
 ### Chat
 
 `sendMessage`, `notifyTyping`, and `stopTyping` all require an active
-chat session. **Call `startSession(channel: .chat, ...)` first** —
+chat session. **Call `startChat(_:)` with the first message first** —
 otherwise these throw `OrigonError(kind: .noSession)`. The same
 applies after `endSession(id:)`.
 
 ```swift
+let started = try client.startChat(StartChatOptions(
+    firstMessage: SendMessagePayload(text: "hello")
+))
+let sessionId = started.sessionId
+
 // Outbound send. The SDK fires `.messageAdded` (status `.sending`)
 // before the wire round-trip and `.messageUpdated` (delivered or
 // failed) after — both surface on `pollEvent()`. The return value is
@@ -316,6 +338,13 @@ size); a disallowed file throws `OrigonError` before any bytes are sent.
 
 ### Push notifications
 
+Enable Push Notifications for the App ID in the Apple Developer portal and add
+the **Push Notifications** capability to the app target so the signed app has
+`aps-environment`. Request alert authorization for visible notifications, but
+call `registerForRemoteNotifications()` on every launch even when you only need
+an updated token; APNs tokens can change after restore, reinstall, or OS changes.
+See Apple's [APNs registration guide](https://developer.apple.com/documentation/usernotifications/registering-your-app-with-apns).
+
 Register this device's APNs token so the backend can deliver push
 notifications. The host app owns token acquisition — request
 authorization and call `registerForRemoteNotifications()`, then forward
@@ -382,10 +411,29 @@ by returning no presentation options when
 tap, read `OrigonPushNotification.sessionId(...)` and call
 `openChat(sessionId:intent: .notification)`.
 
+Add the Notification Service Extension target to the same App Group configured
+above and embed it in the host app. The provider payload must contain an alert
+and `mutable-content: 1` for iOS to invoke the extension. The extension must
+always call its content handler, including from `serviceExtensionTimeWillExpire`;
+if it cannot validate the generation, deliver the original provider alert or
+suppress it in app-owned foreground presentation—never promote unverified
+`title`/`preview`. Apple's [service-extension guide](https://developer.apple.com/documentation/usernotifications/modifying-content-in-newly-delivered-notifications)
+describes the platform timeout and payload requirements.
+
 Call registration on every APNs token refresh. On logout, unregister before
 discarding the client and clear delivered notifications in the host app. An
 uninstall cannot call logout; APNs invalid-token feedback and the server's
 90-day endpoint TTL perform eventual cleanup.
+
+Visible alerts can be delivered while the app is suspended or terminated and a
+tap can launch the app; initialize the client, validate the local generation,
+then route the `sessionId` with `.notification`. Silent/background updates are
+best-effort, may be throttled or coalesced, and are discarded after a force quit,
+so never make continuity correctness depend on receiving one. If you use them,
+enable **Background Modes → Remote notifications** and refresh authoritative
+history after wake. Do not log device tokens, endpoint generations, notification
+payloads, installation identifiers, or endpoint query strings; SDK logging is
+intended for transport state, not credentials or preview content.
 
 **APNs environment.** A device token is bound to the environment of the
 build that produced it (development builds → sandbox; App Store /
@@ -406,7 +454,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | --- | --- |
 | `init(config:)` | Create a client. Throws `OrigonError` on connect failure. |
 | `pollEvent()` | Non-blocking poll. Returns `nil` when idle. |
-| `startSession(_:)` | Open a session. Returns `(sessionId, url, token)`. |
+| `startCall(_:)` / `startChat(_:)` | Open voice or chat. Chat requires its first message. Returns `(sessionId, url, token)`. |
 | `restoreActiveChats()` | Passively attach all retained active chats and return per-id outcomes. |
 | `openChat(sessionId:intent:)` | Open a retained chat with named passive, navigation, or notification authority. |
 | `sessionUpdates(id:policy:)` | Finite `AsyncThrowingStream`: optional cache snapshot, one network snapshot or typed refresh failure, then completion. |
@@ -414,7 +462,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `cachedSession(s)` / `refreshSession(s)` | Explicit cache-only and authoritative network snapshots. |
 | `removeCachedSession(id:)` / `clearChatCache()` / `pruneChatCache()` | Explicit cache maintenance. |
 | `close()` / `OrigonClient.clearAllChatCaches()` | Close joins native loaders and cache writers; after all clients close, atomically clear every cached scope. |
-| `joinSession(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
+| `joinCall(_:)` / `joinChat(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
 | `endSession(_:)` / `endAllSessions()` | Close a single / every session. |
 | `setMute(id:muted:)` / `setMuteAll(muted:)` | Voice — absolute mute. |
 | `setAudioOutput(_:)` | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
@@ -424,7 +472,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `uploadAttachment(path:\|data:\|url:)` | `async`; upload a file (`path:` / `data:` / `url:` overloads) against the client's widget and return the server-issued `Attachment`. No session required. Reports progress via `onProgress`. |
 | `deleteAttachment(attachmentId:)` | `async`; cancel an in-flight upload (pass the `uploadId`) or delete a completed attachment (pass `attachment.id`). No session required. |
 | `activeSessions()` | Snapshot of every active session. |
-| `setAttributes(_:)` | Replace session-level attributes injected as `data.attributes` on `startSession`. |
+| `setAttributes(_:)` | Replace session-level attributes injected on the next start. |
 | `OrigonClient.registerForPushNotifications(deviceToken:environment:)` | Static. Register an APNs device token (buffered until init; auto-detects environment). |
 | `OrigonClient.unregisterForPushNotifications()` | Static. Remove this device's push registration (e.g. on logout). |
 | `startMessage` / `isChatEnabled` / `isCallEnabled` / `multipleChannels` / `attachmentPolicy` / `serverConfig` | Cached `/config` getters. |
@@ -442,9 +490,9 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `MessageStatus` | `.sending`, `.delivered`, `.failed`. |
 | `MessageState` | `.streaming`, `.completed`. |
 | `AudioOutputRoute` | `.automatic` (default route — receiver / wired / Bluetooth), `.speaker` (loudspeaker), `.bluetooth` (on iOS, resolved via `.automatic` — the active session already routes to a connected HFP device). Argument to `setAudioOutput(_:)`. |
-| `StartSessionOptions` | channel, optional sessionId, optional `data` (raw JSON). |
+| `StartCallOptions` / `StartChatOptions` | Voice options; chat options with required first message; optional session id and raw JSON `data`. |
 | `StartSessionResponse` | sessionId, url, token. |
-| `JoinSessionInput` | channel, sessionId, url, token. |
+| `JoinInput` | sessionId, url, token, passed to `joinCall` or `joinChat`. |
 | `ActiveSession` | sessionId, channel. |
 | `AttachmentRule` / `AttachmentPolicy` | tenant policy for attachments. |
 | `ServerConfig` | full `/config` snapshot. |
