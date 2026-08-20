@@ -567,7 +567,7 @@ final class ChatService: ObservableObject {
         case .messageAdded(_, let msg):
             var state = sessionsState[sid] ?? SessionUIState()
             state.messages.append(msg)
-            state.liveMessageKeys.insert(messageKey(msg))
+            state.liveMessageKeys.insert(Self.messageKey(msg))
             sessionsState[sid] = state
 
         case .messageUpdated(_, let key, let msg):
@@ -606,6 +606,16 @@ final class ChatService: ObservableObject {
 
     private func updateMessage(in sid: String, key: String, message: Message) {
         guard var state = sessionsState[sid] else { return }
+        state = Self.applyingMessageUpdate(key: key, message: message, to: state)
+        sessionsState[sid] = state
+    }
+
+    static func applyingMessageUpdate(
+        key: String,
+        message: Message,
+        to state: SessionUIState
+    ) -> SessionUIState {
+        var state = state
         if let idx = state.messages.firstIndex(where: { messageKey($0) == key }) {
             let prior = state.messages[idx]
             state.messages[idx] = Self.overlayingLocalHints(from: prior, onto: message)
@@ -617,14 +627,14 @@ final class ChatService: ObservableObject {
             state.messages.append(message)
             state.liveMessageKeys.insert(messageKey(message))
         }
-        sessionsState[sid] = state
+        return state
     }
 
     // Outbound rows show up first as `messageAdded` with `localId` set
     // and `id == ""`; the server `id` lands on `messageUpdated`. Prefer
     // `localId` so the same row tracks across the sending → delivered
     // transition. Inbound rows have no `localId`, so `id` wins.
-    private func messageKey(_ m: Message) -> String {
+    private static func messageKey(_ m: Message) -> String {
         if let local = m.localId, !local.isEmpty { return local }
         return m.id
     }

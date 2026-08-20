@@ -100,6 +100,84 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertFalse(service.sessionsState["cancelled"]?.messages.contains { $0.id == "late" } ?? false)
     }
 
+    func testReconciliationOverlaysStableIdentityAndAttachmentPreview() {
+        let preview = Attachment(
+            id: "file", name: "photo", contentType: "image/jpeg",
+            url: "https://remote/old", localUrl: "file:///preview"
+        )
+        let remoteFile = Attachment(
+            id: "file", name: "photo", contentType: "image/jpeg",
+            url: "https://remote/new"
+        )
+        let local = Message(
+            id: "server-1", localId: "local-1", text: "old",
+            attachments: [preview], status: .delivered
+        )
+        let remote = Message(
+            id: "server-1", text: "authoritative",
+            attachments: [remoteFile], status: .delivered
+        )
+        let live = Message(id: "live-2", text: "new live", status: .delivered)
+        let failed = Message(id: "", localId: "failed-3", text: "retry", status: .failed)
+        let state = ChatService.SessionUIState(
+            messages: [local, live, failed],
+            liveMessageKeys: ["live-2"]
+        )
+
+        let reconciled = ChatService.reconciling([remote], into: state)
+
+        XCTAssertEqual(reconciled.messages.map(\.id), ["server-1", "live-2", ""])
+        XCTAssertEqual(reconciled.messages[0].text, "authoritative")
+        XCTAssertEqual(reconciled.messages[0].localId, "local-1")
+        XCTAssertEqual(reconciled.messages[0].attachments[0].url, "https://remote/new")
+        XCTAssertEqual(reconciled.messages[0].attachments[0].localUrl, "file:///preview")
+    }
+
+    func testReconciliationHandlesReorderEmptyAndIdempotentReplay() {
+        let first = Message(id: "1", text: "first")
+        let second = Message(id: "2", text: "second")
+        let stale = Message(id: "stale", text: "drop me")
+        let sending = Message(id: "", localId: "sending", text: "pending", status: .sending)
+        let failed = Message(id: "", localId: "failed", text: "retry", status: .failed)
+        let state = ChatService.SessionUIState(messages: [stale, sending, failed])
+
+        let reordered = ChatService.reconciling([second, first], into: state)
+        XCTAssertEqual(reordered.messages.map(\.id), ["2", "1", "", ""])
+        let replayed = ChatService.reconciling([second, first], into: reordered)
+        XCTAssertEqual(replayed.messages, reordered.messages)
+
+        let emptied = ChatService.reconciling([], into: state)
+        XCTAssertEqual(emptied.messages.map(\.localId), ["sending", "failed"])
+    }
+
+    func testDeliveredAndFailedUpdatesCorrelateToOneProvisionalRow() {
+        let provisional = Message(
+            id: "", localId: "sdk-local", text: "hello", status: .sending
+        )
+        let initial = ChatService.SessionUIState(
+            messages: [provisional], liveMessageKeys: ["sdk-local"]
+        )
+        let delivered = Message(id: "server-id", text: "hello", status: .delivered)
+        let deliveredState = ChatService.applyingMessageUpdate(
+            key: "sdk-local", message: delivered, to: initial
+        )
+        XCTAssertEqual(deliveredState.messages.count, 1)
+        XCTAssertEqual(deliveredState.messages[0].id, "server-id")
+        XCTAssertEqual(deliveredState.messages[0].localId, "sdk-local")
+
+        let replayed = ChatService.reconciling([delivered], into: deliveredState)
+        XCTAssertEqual(replayed.messages.count, 1)
+        XCTAssertEqual(replayed.messages[0].localId, "sdk-local")
+
+        let failure = Message(id: "", text: "hello", errorText: "offline", status: .failed)
+        let failedState = ChatService.applyingMessageUpdate(
+            key: "sdk-local", message: failure, to: initial
+        )
+        XCTAssertEqual(failedState.messages.count, 1)
+        XCTAssertEqual(failedState.messages[0].status, .failed)
+        XCTAssertEqual(failedState.messages[0].localId, "sdk-local")
+    }
+
     private func waitUntil(
         _ predicate: @escaping @MainActor () -> Bool,
         file: StaticString = #filePath,
