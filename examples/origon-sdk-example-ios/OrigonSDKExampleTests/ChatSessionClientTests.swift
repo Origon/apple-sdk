@@ -277,6 +277,66 @@ final class ChatSessionClientTests: XCTestCase {
         await waitUntil { service.messages.map(\.id) == ["kept", "refocused"] }
     }
 
+    func testEndpointConfigurationMatrixAndCategoryRules() {
+        var attachments = ExampleAttachmentPolicy()
+        attachments.images = true
+        attachments.audio = true
+        let cases: [(ExampleServerConfig, Bool, Bool, Bool, Bool)] = [
+            (.init(startMessage: "Voice", multipleChannels: false,
+                   chatEnabled: false, callEnabled: true), false, true, false, false),
+            (.init(startMessage: "Chat", multipleChannels: false,
+                   chatEnabled: true, callEnabled: false), true, false, false, true),
+            (.init(startMessage: "Both", multipleChannels: true,
+                   chatEnabled: true, callEnabled: true), true, false, true, true),
+            (.init(startMessage: "Split", multipleChannels: false,
+                   chatEnabled: true, callEnabled: true), true, false, false, true),
+        ]
+        for (config, composer, voiceOnly, composerVoice, promptSend) in cases {
+            let policy = ExampleEndpointPolicy(config: config)
+            XCTAssertEqual(policy.greeting, config.startMessage)
+            XCTAssertEqual(policy.showsComposer, composer)
+            XCTAssertEqual(policy.showsVoiceOnlyAction, voiceOnly)
+            XCTAssertEqual(policy.showsComposerVoiceAction, composerVoice)
+            XCTAssertEqual(policy.promptSendEnabled, promptSend)
+        }
+
+        let enabled = ExampleEndpointPolicy(config: .init(
+            startMessage: "  ", multipleChannels: false,
+            chatEnabled: true, callEnabled: false, attachments: attachments
+        ))
+        XCTAssertEqual(enabled.greeting, "How can I help you?")
+        XCTAssertTrue(enabled.attachments.allows(.images))
+        XCTAssertTrue(enabled.attachments.allows(.audio))
+        XCTAssertFalse(enabled.attachments.allows(.videos))
+        XCTAssertFalse(enabled.attachments.allows(.documents))
+
+        let disabled = ExampleEndpointPolicy(config: .init(
+            startMessage: "Hidden", multipleChannels: false,
+            chatEnabled: false, callEnabled: true, attachments: attachments
+        ))
+        XCTAssertFalse(disabled.attachments.allows(.images))
+        XCTAssertFalse(disabled.promptSendEnabled)
+    }
+
+    func testEndpointConfigurationReplacementRejectsStaleClient() {
+        let old = ExampleServerConfig(
+            startMessage: "Old", multipleChannels: false,
+            chatEnabled: true, callEnabled: false
+        )
+        let fresh = ExampleServerConfig(
+            startMessage: "Fresh", multipleChannels: true,
+            chatEnabled: true, callEnabled: true
+        )
+        var replacement = ExampleConfigReplacement()
+        let oldEpoch = replacement.begin()
+        XCTAssertTrue(replacement.install(old, for: oldEpoch))
+        let freshEpoch = replacement.begin()
+        XCTAssertNil(replacement.value)
+        XCTAssertFalse(replacement.install(old, for: oldEpoch))
+        XCTAssertTrue(replacement.install(fresh, for: freshEpoch))
+        XCTAssertEqual(replacement.value, fresh)
+    }
+
     private func waitUntil(
         _ predicate: @escaping @MainActor () -> Bool,
         file: StaticString = #filePath,

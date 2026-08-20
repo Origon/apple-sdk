@@ -32,7 +32,17 @@ struct ChatView: View {
                 } else {
                     messagesArea
                 }
-                inputBar
+                if sdk.endpointPolicy.showsComposer {
+                    inputBar
+                } else if sdk.endpointPolicy.showsVoiceOnlyAction {
+                    PrimaryButton(title: "Start a call", action: onStartCall)
+                        .padding(16)
+                } else {
+                    Text("Messaging and calls are disabled for this endpoint.")
+                        .font(.footnote)
+                        .foregroundColor(Origon.textSecondary)
+                        .padding(16)
+                }
             }
 
             if showToast, let message = toastMessage {
@@ -113,7 +123,7 @@ struct ChatView: View {
             isPresented: $showPhotoPicker,
             selection: $photoSelections,
             maxSelectionCount: nil,
-            matching: .any(of: [.images, .videos])
+            matching: photoPickerFilter
         )
         .onChange(of: photoSelections) { items in
             guard !items.isEmpty else { return }
@@ -148,7 +158,7 @@ struct ChatView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 56, height: 56)
-            Text("How can I help you?")
+            Text(sdk.endpointPolicy.greeting)
                 .font(.title2.weight(.medium))
                 .foregroundColor(Origon.textPrimary)
                 .multilineTextAlignment(.center)
@@ -170,9 +180,8 @@ struct ChatView: View {
                             message: message,
                             selectedIndex: $selectedMessageIndex,
                             index: index,
-                            promptIsLive: sdk.chat.promptIsLive(
-                                message, in: sdk.chat.currentSessionId
-                            ),
+                            promptIsLive: sdk.endpointPolicy.promptSendEnabled &&
+                                sdk.chat.promptIsLive(message, in: sdk.chat.currentSessionId),
                             promptSelection: sdk.chat.selection(
                                 for: message.id, in: sdk.chat.currentSessionId
                             ),
@@ -231,6 +240,21 @@ struct ChatView: View {
         sdk.chat.currentSessionId != nil && !sdk.chat.canSendFocusedSession
     }
 
+    private var primaryIsVoice: Bool {
+        !hasContent && sdk.endpointPolicy.showsComposerVoiceAction
+    }
+
+    private var photoPickerFilter: PHPickerFilter {
+        let policy = sdk.endpointPolicy.attachments
+        switch (policy.images, policy.videos) {
+        case (true, true):
+            return PHPickerFilter.any(of: [PHPickerFilter.images, PHPickerFilter.videos])
+        case (true, false): return PHPickerFilter.images
+        case (false, true): return PHPickerFilter.videos
+        case (false, false): return PHPickerFilter.images
+        }
+    }
+
     // MARK: - Input bar
 
     private var inputBar: some View {
@@ -250,7 +274,7 @@ struct ChatView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                attachButton
+                if sdk.chat.attachmentsAllowed { attachButton }
 
                 TextField("Message", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -299,22 +323,27 @@ struct ChatView: View {
 
     private var attachButton: some View {
         Menu {
-            Button {
-                showPhotoPicker = true
-            } label: {
-                Label("Photo Library", systemImage: "photo.on.rectangle")
+            if sdk.endpointPolicy.attachments.images || sdk.endpointPolicy.attachments.videos {
+                Button {
+                    showPhotoPicker = true
+                } label: {
+                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                }
             }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            if sdk.endpointPolicy.attachments.images &&
+                UIImagePickerController.isSourceTypeAvailable(.camera) {
                 Button {
                     showCamera = true
                 } label: {
                     Label("Camera", systemImage: "camera")
                 }
             }
-            Button {
-                showFilePicker = true
-            } label: {
-                Label("Files", systemImage: "folder")
+            if sdk.endpointPolicy.attachments.documents || sdk.endpointPolicy.attachments.audio {
+                Button {
+                    showFilePicker = true
+                } label: {
+                    Label("Files", systemImage: "folder")
+                }
             }
         } label: {
             Image("AttachmentIcon")
@@ -333,11 +362,11 @@ struct ChatView: View {
 
     private var sendOrWaveButton: some View {
         Button {
-            if hasContent {
-                sendMessage()
-            } else {
+            if primaryIsVoice {
                 isInputFocused = false
                 onStartCall()
+            } else {
+                sendMessage()
             }
         } label: {
             ZStack {
@@ -353,17 +382,17 @@ struct ChatView: View {
                     Circle()
                         .fill(Origon.accent)
                         .frame(width: 32, height: 32)
-                    Image(hasContent ? "SendIcon" : "VoiceIcon")
+                    Image(primaryIsVoice ? "VoiceIcon" : "SendIcon")
                         .renderingMode(.template)
                         .resizable()
                         .frame(width: 20, height: 20)
                         .foregroundColor(Origon.accentForeground)
-                        .id(hasContent)
+                        .id(primaryIsVoice)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
         }
-        .disabled(isSending || composerBlocked)
+        .disabled(isSending || composerBlocked || (!hasContent && !primaryIsVoice))
     }
 
     private var attachmentsPreviewRow: some View {

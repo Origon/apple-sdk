@@ -170,10 +170,15 @@ final class ChatService: ObservableObject {
     }
 
     var attachmentsAllowed: Bool {
-        guard let client = sdk?.client else { return false }
-        let p = client.attachmentPolicy
-        return p.images.enabled || p.documents.enabled
-            || p.videos.enabled || p.audio.enabled
+        ExampleAttachmentCategory.allCases.contains {
+            sdk?.endpointPolicy.attachments.allows($0) == true
+        }
+    }
+
+    func attachmentAllowed(contentType: String) -> Bool {
+        sdk?.endpointPolicy.attachments.allows(
+            ExampleAttachmentCategory(contentType: contentType)
+        ) == true
     }
 
     var hasUploadingAttachments: Bool {
@@ -498,6 +503,10 @@ final class ChatService: ObservableObject {
     /// server-issued ``Attachment``; on failure to `.error` with a
     /// human-friendly message keyed off ``OrigonError`` codes.
     func uploadFile(data: Data, fileName: String, contentType: String, previewImage: UIImage?) {
+        guard attachmentAllowed(contentType: contentType) else {
+            error = "This file type is disabled for this endpoint."
+            return
+        }
         let localId = UUID().uuidString
         let pending = PendingAttachment(
             id: localId,
