@@ -207,6 +207,7 @@ final class ChatSessionClientTests: XCTestCase {
     }
 }
 
+@MainActor
 private final class FakeLateChatClient: ChatSessionClient {
     struct Access {
         let id: String
