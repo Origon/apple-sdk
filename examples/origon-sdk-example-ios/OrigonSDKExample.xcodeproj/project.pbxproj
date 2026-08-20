@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0A0A0A0A0A0A0A0A0A0A0001 /* ChatSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */; };
 		0A0A0A0A0A0A0A0A0A0A0003 /* ChatSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */; };
+		C4A000000000000000000003 /* RichTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A000000000000000000004 /* RichTextTests.swift */; };
 		0A0A0A0A0A0A0A0A0A0A0005 /* OrigonSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */; };
 		0B0B0B0B0B0B0B0B0B0B0001 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 0B0B0B0B0B0B0B0B0B0B0003 /* SwiftSoup */; };
 		0099F70D8F8B0EA88AD6C1E5 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67549FFD7794AEB5D310656A /* Theme.swift */; };
@@ -28,6 +29,7 @@
 		7F282191D098108AC0ADFCB3 /* OrigonSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 00A08C26CD60E0DE7F92C052 /* OrigonSDK */; };
 		843B832E379711014ABFBCB3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6B517BD7B7AB496371341EEB /* Assets.xcassets */; };
 		A0ED665A884E256660F0B881 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A89C7D8A528CE098AE88A52A /* MessageBubble.swift */; };
+		C4A000000000000000000001 /* RichText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A000000000000000000002 /* RichText.swift */; };
 		B1A2C3D4E5F60718293A4B5C /* MessageButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */; };
 		B1A2C3D4E5F60718293A4B5E /* MessageGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */; };
 		A1F8C7AE01FD40C9B6379A4D /* TypingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948866B17BAB9F6BC258F114 /* TypingIndicator.swift */; };
@@ -53,6 +55,7 @@
 /* Begin PBXFileReference section */
 		0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionClient.swift; sourceTree = "<group>"; };
 		0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionClientTests.swift; sourceTree = "<group>"; };
+		C4A000000000000000000004 /* RichTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextTests.swift; sourceTree = "<group>"; };
 		0A0A0A0A0A0A0A0A0A0A0007 /* OrigonSDKExampleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OrigonSDKExampleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0508D7E6D314D3D2DF860035 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		159D087F99F38EEEB06AFF23 /* AppButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppButtons.swift; sourceTree = "<group>"; };
@@ -76,6 +79,7 @@
 		A20FF1140500543E0588B99C /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A4FD1D417AAF1831481A6537 /* ImagePickers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickers.swift; sourceTree = "<group>"; };
 		A89C7D8A528CE098AE88A52A /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		C4A000000000000000000002 /* RichText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichText.swift; sourceTree = "<group>"; };
 		B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageButtons.swift; sourceTree = "<group>"; };
 		B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageGallery.swift; sourceTree = "<group>"; };
 		A9D4DFBD3C28444716A94738 /* RootChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootChatView.swift; sourceTree = "<group>"; };
@@ -112,6 +116,7 @@
 				5640C2D19354E445F30C2C4D /* EdgePanGesture.swift */,
 				3B6E58B73256CEE3A47A56C9 /* Haptics.swift */,
 				A89C7D8A528CE098AE88A52A /* MessageBubble.swift */,
+				C4A000000000000000000002 /* RichText.swift */,
 				B1A2C3D4E5F60718293A4B5D /* MessageButtons.swift */,
 				B1A2C3D4E5F60718293A4B5F /* MessageGallery.swift */,
 				64B3F15EF88FA5450F95EDC0 /* OrigonInput.swift */,
@@ -186,6 +191,7 @@
 			isa = PBXGroup;
 			children = (
 				0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */,
+				C4A000000000000000000004 /* RichTextTests.swift */,
 			);
 			path = OrigonSDKExampleTests;
 			sourceTree = "<group>";
@@ -293,6 +299,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A0A0A0A0A0A0A0A0A0A0003 /* ChatSessionClientTests.swift in Sources */,
+				C4A000000000000000000003 /* RichTextTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -313,6 +320,7 @@
 				2F1B0ABDA4EB04682C2EE71C /* Haptics.swift in Sources */,
 				A7F3FC355FBD0AF08829A71D /* ImagePickers.swift in Sources */,
 				A0ED665A884E256660F0B881 /* MessageBubble.swift in Sources */,
+				C4A000000000000000000001 /* RichText.swift in Sources */,
 				B1A2C3D4E5F60718293A4B5C /* MessageButtons.swift in Sources */,
 				B1A2C3D4E5F60718293A4B5E /* MessageGallery.swift in Sources */,
 				E23C359ECF5AA8D2C3332EB0 /* Models.swift in Sources */,

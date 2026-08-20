@@ -78,8 +78,12 @@ struct MessageBubble: View {
             if isSelfUser { Spacer(minLength: 60) }
 
             VStack(alignment: isSelfUser ? .trailing : .leading, spacing: 6) {
-                if let text = message.text, !text.isEmpty {
-                    Text(text)
+                if message.text?.isEmpty == false || message.html?.isEmpty == false {
+                    ExampleRichMessageBody(
+                        html: message.html,
+                        text: message.text,
+                        color: isSelfUser ? Origon.accentForeground : Origon.textPrimary
+                    )
                         .font(.body)
                         .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                         .padding(.horizontal, 14)
