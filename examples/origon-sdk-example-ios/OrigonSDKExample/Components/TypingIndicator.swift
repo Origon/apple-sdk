@@ -5,7 +5,14 @@ struct TypingIndicator: View {
     private let cycle: Double = 1.0
 
     var body: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 10) {
+            Text("AI")
+                .font(.caption2.weight(.semibold))
+                .foregroundColor(Origon.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(Origon.surface)
+                .clipShape(Circle())
+                .accessibilityHidden(true)
             // Driven by wall-clock time so the animation is deterministic on
             // every render — no @State / onAppear that can fail to re-trigger
             // when the view's identity is reused.
@@ -23,10 +30,12 @@ struct TypingIndicator: View {
                 .padding(.vertical, 12)
                 .background(Origon.remoteBubble)
                 .cornerRadius(18)
+                .accessibilityLabel("Assistant is typing")
             }
 
             Spacer(minLength: 60)
         }
+        .accessibilityElement(children: .contain)
     }
 
     /// Vertical offset (0 ... -4) for a given dot, evenly phased across the cycle.

@@ -5,6 +5,7 @@ struct MessageBubble: View {
     let message: Message
     @Binding var selectedIndex: Int?
     let index: Int
+    let showsAuthor: Bool
     /// Interactive-prompt wiring. Defaulted so the call sites that render
     /// plain transcript rows stay unchanged; only the live chat transcript
     /// passes these.
@@ -18,6 +19,8 @@ struct MessageBubble: View {
     private var isSelfUser: Bool {
         message.role == .external
     }
+
+    private var authorName: String { exampleMessageAuthor(message).displayName }
 
     private var showTimestamp: Bool {
         selectedIndex == index && message.timestamp != nil
@@ -78,6 +81,12 @@ struct MessageBubble: View {
             if isSelfUser { Spacer(minLength: 60) }
 
             VStack(alignment: isSelfUser ? .trailing : .leading, spacing: 6) {
+                if showsAuthor {
+                    Text(authorName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(Origon.textSecondary)
+                        .accessibilityLabel("Message from \(authorName)")
+                }
                 if message.text?.isEmpty == false || message.html?.isEmpty == false {
                     ExampleRichMessageBody(
                         html: message.html,
@@ -96,7 +105,7 @@ struct MessageBubble: View {
 
                 if !message.attachments.isEmpty {
                     VStack(alignment: isSelfUser ? .trailing : .leading, spacing: 6) {
-                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { idx, att in
+                        ForEach(Array(message.attachments.enumerated()), id: \.element.id) { idx, att in
                             AttachmentRow(attachment: att, isSelfUser: isSelfUser)
                                 .onTapGesture {
                                     previewIndex = idx
@@ -210,6 +219,31 @@ struct MessageBubble: View {
         timeFormatter.dateFormat = "h:mm a"
         return timeFormatter.string(from: date)
     }
+}
+
+struct ExampleMessageAuthor: Equatable {
+    let key: String
+    let displayName: String
+}
+
+func exampleMessageAuthor(_ message: Message) -> ExampleMessageAuthor {
+    let name = message.userName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let userID = message.userId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch message.role {
+    case .external:
+        return .init(key: "self", displayName: name?.isEmpty == false ? name! : "You")
+    case .user:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? "agent")
+        return .init(key: "agent:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Agent")
+    case .ai, .system:
+        return .init(key: "assistant", displayName: "Assistant")
+    }
+}
+
+func exampleShouldShowAuthor(_ message: Message, previous: Message?) -> Bool {
+    guard message.action?.isEmpty != false else { return false }
+    guard let previous, previous.action?.isEmpty != false else { return true }
+    return exampleMessageAuthor(message).key != exampleMessageAuthor(previous).key
 }
 
 // MARK: - Attachment row

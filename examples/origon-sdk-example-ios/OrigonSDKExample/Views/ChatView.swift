@@ -218,6 +218,10 @@ struct ChatView: View {
                             message: row.message,
                             selectedIndex: $selectedMessageIndex,
                             index: row.index,
+                            showsAuthor: exampleShouldShowAuthor(
+                                row.message,
+                                previous: row.index > 0 ? sdk.chat.messages[row.index - 1] : nil
+                            ),
                             promptIsLive: sdk.endpointPolicy.promptSendEnabled &&
                                 sdk.chat.promptIsLive(row.message, in: sdk.chat.currentSessionId),
                             promptSelection: sdk.chat.selection(

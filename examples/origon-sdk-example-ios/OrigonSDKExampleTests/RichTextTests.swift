@@ -1,4 +1,5 @@
 import XCTest
+import OrigonSDK
 @testable import OrigonSDKExample
 
 final class RichTextTests: XCTestCase {
@@ -37,6 +38,20 @@ final class RichTextTests: XCTestCase {
         XCTAssertFalse(ExampleRichText.shouldPublish(request: 1, current: 2, cancelled: false))
         XCTAssertFalse(ExampleRichText.shouldPublish(request: 2, current: 2, cancelled: true))
         XCTAssertTrue(ExampleRichText.shouldPublish(request: 2, current: 2, cancelled: false))
+    }
+
+    func testAuthorTransitionsAndStableMediaPolicies() {
+        let first = Message(role: .user, id: "1", text: "a", userId: "agent", userName: "Pat")
+        let repeated = Message(role: .user, id: "2", text: "b", userId: "agent", userName: "Pat")
+        let selfRow = Message(role: .external, id: "3", text: "c")
+        let lifecycle = Message(role: .system, id: "4", text: "joined", action: "joined")
+        XCTAssertTrue(exampleShouldShowAuthor(first, previous: nil))
+        XCTAssertFalse(exampleShouldShowAuthor(repeated, previous: first))
+        XCTAssertTrue(exampleShouldShowAuthor(selfRow, previous: repeated))
+        XCTAssertFalse(exampleShouldShowAuthor(lifecycle, previous: selfRow))
+        XCTAssertEqual(exampleMessageAuthor(first).displayName, "Pat")
+        XCTAssertEqual(exampleMessageAuthor(selfRow).displayName, "You")
+        XCTAssertEqual(Array(["a", "b", "c"].enumerated()).map(\.offset), [0, 1, 2])
     }
 
     private func visible(_ blocks: [ExampleRichBlock]) -> String {
