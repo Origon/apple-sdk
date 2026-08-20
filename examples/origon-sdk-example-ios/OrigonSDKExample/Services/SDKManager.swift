@@ -89,6 +89,7 @@ final class SDKManager: ObservableObject {
         }.value
 
         self.client = newClient
+        chat.clientDidChange()
         self.isReady = true
         startPolling()
     }

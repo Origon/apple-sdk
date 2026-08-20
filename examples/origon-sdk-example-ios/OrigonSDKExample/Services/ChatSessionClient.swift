@@ -16,6 +16,10 @@ protocol ChatSessionClient: AnyObject {
         sessionId: String,
         intent: ChatAccessIntent
     ) async throws -> StartSessionResponse
+
+    func startChat(_ options: StartChatOptions) async throws -> StartSessionResponse
+
+    func sendMessage(id: String, payload: SendMessagePayload) async throws
 }
 
 extension OrigonClient: ChatSessionClient {
@@ -26,5 +30,13 @@ extension OrigonClient: ChatSessionClient {
         try await Task.detached {
             try self.openChat(sessionId: sessionId, intent: intent)
         }.value
+    }
+
+    func startChat(_ options: StartChatOptions) async throws -> StartSessionResponse {
+        try await Task.detached { try self.startChat(options) }.value
+    }
+
+    func sendMessage(id: String, payload: SendMessagePayload) async throws {
+        try await Task.detached { try self.sendMessage(id: id, payload: payload) }.value
     }
 }

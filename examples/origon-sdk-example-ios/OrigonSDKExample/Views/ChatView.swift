@@ -87,6 +87,11 @@ struct ChatView: View {
         .onAppear {
             focusSessionIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            sdk.chat.refetchFocusedSession()
+        }
         .onChange(of: sessionId) { _ in
             hasStartedSession = false
             hasFocusedOnce = false
@@ -222,10 +227,23 @@ struct ChatView: View {
         hasText || !sdk.chat.pendingAttachments.isEmpty
     }
 
+    private var composerBlocked: Bool {
+        sdk.chat.currentSessionId != nil && !sdk.chat.canSendFocusedSession
+    }
+
     // MARK: - Input bar
 
     private var inputBar: some View {
         VStack(spacing: 0) {
+            if let status = connectionStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundColor(Origon.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .accessibilityLabel(status)
+            }
             if !sdk.chat.pendingAttachments.isEmpty {
                 attachmentsPreviewRow
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -240,6 +258,7 @@ struct ChatView: View {
                     .lineLimit(1...5)
                     .focused($isInputFocused)
                     .padding(.vertical, 8)
+                    .disabled(composerBlocked)
                     .onChange(of: inputText) { newValue in
                         if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             sdk.chat.stopTyping()
@@ -265,6 +284,17 @@ struct ChatView: View {
         )
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
+    }
+
+    private var connectionStatus: String? {
+        guard sdk.chat.currentSessionId != nil else { return nil }
+        switch sdk.chat.currentConnectionState {
+        case .connected:
+            return sdk.chat.canSendFocusedSession ? nil : "Opening conversation…"
+        case .reconnecting: return "Reconnecting…"
+        case .dropped: return "Connection lost. Your next message will retry."
+        case .ended: return "Conversation ended. This transcript is read-only."
+        }
     }
 
     private var attachButton: some View {
@@ -297,7 +327,7 @@ struct ChatView: View {
         }
         .padding(.leading, 2)
         .padding(.bottom, 3)
-        .disabled(isSending)
+        .disabled(isSending || composerBlocked)
         .simultaneousGesture(TapGesture().onEnded { isInputFocused = false })
     }
 
@@ -333,7 +363,7 @@ struct ChatView: View {
                 }
             }
         }
-        .disabled(isSending)
+        .disabled(isSending || composerBlocked)
     }
 
     private var attachmentsPreviewRow: some View {

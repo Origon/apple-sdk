@@ -178,6 +178,105 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertEqual(failedState.messages[0].localId, "sdk-local")
     }
 
+    func testReconnectPreservesTranscriptAndGapRefetches() async throws {
+        let fake = FakeLateChatClient()
+        let service = ChatService(chatClient: fake)
+        service.installStateForTesting(
+            id: "chat",
+            state: .init(messages: [message("before")], accessGranted: true)
+        )
+
+        service.receiveForTesting(.reconnecting(
+            sessionId: "chat", attempt: 1, reason: .networkLoss
+        ))
+        XCTAssertEqual(service.currentConnectionState, .reconnecting)
+        XCTAssertFalse(service.canSendFocusedSession)
+        XCTAssertEqual(service.messages.map(\.id), ["before"])
+
+        service.receiveForTesting(.reconnected(sessionId: "chat"))
+        await fake.waitForStreamRequests(1)
+        fake.yield(snapshot(
+            source: "network", authoritative: true,
+            messages: [message("before"), message("missed")]
+        ), at: 0)
+        fake.finishStream(at: 0)
+        await waitUntil { service.messages.map(\.id) == ["before", "missed"] }
+        XCTAssertEqual(service.currentConnectionState, .connected)
+        XCTAssertTrue(service.canSendFocusedSession)
+    }
+
+    func testDroppedAttachmentFirstSendResumesSameId() async throws {
+        let fake = FakeLateChatClient()
+        let service = ChatService(chatClient: fake)
+        let attachment = Attachment(
+            id: "file", name: "photo.jpg", contentType: "image/jpeg",
+            url: "https://example.invalid/file"
+        )
+        let pending = PendingAttachment(
+            id: "local-file", fileName: "photo.jpg", contentType: "image/jpeg",
+            previewImage: nil, status: .completed, progress: 100,
+            attachment: attachment, errorText: nil
+        )
+        service.installStateForTesting(
+            id: "chat",
+            state: .init(
+                messages: [message("kept")], accessGranted: false,
+                connectionState: .dropped, pendingAttachments: [pending]
+            )
+        )
+
+        await service.sendMessage(text: "")
+
+        XCTAssertEqual(fake.starts.count, 1)
+        XCTAssertEqual(fake.starts[0].sessionId, "chat")
+        XCTAssertEqual(fake.starts[0].firstMessage.attachments.map(\.id), ["file"])
+        XCTAssertEqual(service.messages.map(\.id), ["kept"])
+        XCTAssertEqual(service.currentConnectionState, .connected)
+        XCTAssertTrue(service.pendingAttachments.isEmpty)
+    }
+
+    func testCleanEndIsReadOnlyAndIgnoresStaleReconnect() async throws {
+        let fake = FakeLateChatClient()
+        let service = ChatService(chatClient: fake)
+        service.installStateForTesting(
+            id: "chat",
+            state: .init(messages: [message("kept")], accessGranted: true)
+        )
+
+        service.receiveForTesting(.chatSessionEnded(
+            sessionId: "chat", reason: "complete", acw: nil
+        ))
+        service.receiveForTesting(.reconnected(sessionId: "chat"))
+        await service.sendMessage(text: "blocked")
+
+        XCTAssertEqual(service.currentConnectionState, .ended)
+        XCTAssertFalse(service.canSendFocusedSession)
+        XCTAssertEqual(service.messages.map(\.id), ["kept"])
+        XCTAssertTrue(fake.starts.isEmpty)
+        XCTAssertTrue(fake.sent.isEmpty)
+    }
+
+    func testClientEpochFencesLateEventsAndRefocusRefetches() async throws {
+        let fake = FakeLateChatClient()
+        let service = ChatService(chatClient: fake)
+        service.installStateForTesting(id: "chat", state: .init(messages: [message("kept")]))
+        service.clientWillChange()
+        service.receiveForTesting(.messageAdded(
+            sessionId: "chat", message: message("stale")
+        ))
+        XCTAssertEqual(service.messages.map(\.id), ["kept"])
+
+        service.clientDidChange()
+        service.refetchFocusedSession()
+        await fake.waitForStreamRequests(1)
+        fake.yield(snapshot(
+            source: "network", authoritative: true,
+            messages: [message("kept"), message("refocused")]
+        ), at: 0)
+        fake.finishStream(at: 0)
+        await waitUntil { service.messages.map(\.id) == ["kept", "refocused"] }
+    }
+
     private func waitUntil(
         _ predicate: @escaping @MainActor () -> Bool,
         file: StaticString = #filePath,
@@ -218,6 +317,8 @@ private final class FakeLateChatClient: ChatSessionClient {
     private(set) var streamIds: [String] = []
     private(set) var streams: [AsyncThrowingStream<SessionLoadUpdate, Error>.Continuation] = []
     private(set) var accesses: [Access] = []
+    private(set) var starts: [StartChatOptions] = []
+    private(set) var sent: [(String, SendMessagePayload)] = []
 
     func sessionUpdates(
         id: String,
@@ -238,12 +339,29 @@ private final class FakeLateChatClient: ChatSessionClient {
         }
     }
 
+    func startChat(_ options: StartChatOptions) async throws -> StartSessionResponse {
+        starts.append(options)
+        return StartSessionResponse(
+            sessionId: options.sessionId ?? "new-chat",
+            url: "https://example.invalid", token: "test"
+        )
+    }
+
+    func sendMessage(id: String, payload: SendMessagePayload) async throws {
+        sent.append((id, payload))
+    }
+
     func waitForRequests(_ count: Int) async {
         for _ in 0..<500 where streams.count < count || accesses.count < count {
             await Task.yield()
         }
         XCTAssertEqual(streams.count, count)
         XCTAssertEqual(accesses.count, count)
+    }
+
+    func waitForStreamRequests(_ count: Int) async {
+        for _ in 0..<500 where streams.count < count { await Task.yield() }
+        XCTAssertEqual(streams.count, count)
     }
 
     func yield(_ update: SessionLoadUpdate, at index: Int) { streams[index].yield(update) }
