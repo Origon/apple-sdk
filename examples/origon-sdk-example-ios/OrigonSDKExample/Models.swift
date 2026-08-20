@@ -124,9 +124,10 @@ final class ProtectedCheckpointFileStore: ExampleCheckpointFileStore, @unchecked
     }
 }
 
-actor ExampleChatCheckpointStore {
+final class ExampleChatCheckpointStore: @unchecked Sendable {
     private let epochStore: any ExampleCheckpointEpochStore
     private let fileStore: any ExampleCheckpointFileStore
+    private let queue = DispatchQueue(label: "ai.origon.example.unread-checkpoints")
 
     init(
         epochStore: any ExampleCheckpointEpochStore,
@@ -145,13 +146,15 @@ actor ExampleChatCheckpointStore {
 
     func read(endpoint: String, sessionId: String, now: Date = Date()) async throws
         -> ExampleChatCheckpoint? {
-        let key = try await scopedKey(endpoint: endpoint, sessionId: sessionId)
-        var records = try await load()
-        guard let index = records.firstIndex(where: { $0.scopeKey == key }) else { return nil }
-        let found = records[index]
-        records[index].lastAccessedAt = now
-        try await save(pruneExampleCheckpoints(records, now: now))
-        return found
+        try await perform { [self] in
+            let key = try scopedKey(endpoint: endpoint, sessionId: sessionId)
+            var records = try load()
+            guard let index = records.firstIndex(where: { $0.scopeKey == key }) else { return nil }
+            let found = records[index]
+            records[index].lastAccessedAt = now
+            try save(pruneExampleCheckpoints(records, now: now))
+            return found
+        }
     }
 
     func markSeen(
@@ -171,36 +174,45 @@ actor ExampleChatCheckpointStore {
             latestRowVisible: latestRowVisible,
             newestEligibleId: messageId
         ), let messageId else { return }
-        let key = try await scopedKey(endpoint: endpoint, sessionId: sessionId)
-        var records = try await load().filter { $0.scopeKey != key }
-        records.append(ExampleChatCheckpoint(
-            version: exampleCheckpointVersion,
-            scopeKey: key,
-            lastSeenMessageId: messageId,
-            lastAccessedAt: now
-        ))
-        try await save(pruneExampleCheckpoints(records, now: now))
+        try await perform { [self] in
+            let key = try scopedKey(endpoint: endpoint, sessionId: sessionId)
+            var records = try load().filter { $0.scopeKey != key }
+            records.append(ExampleChatCheckpoint(
+                version: exampleCheckpointVersion,
+                scopeKey: key,
+                lastSeenMessageId: messageId,
+                lastAccessedAt: now
+            ))
+            try save(pruneExampleCheckpoints(records, now: now))
+        }
     }
 
-    func scopedKey(endpoint: String, sessionId: String) async throws -> String {
-        let epochStore = self.epochStore
-        let epoch = try await Task.detached { try epochStore.loadOrCreateEpoch() }.value
+    private func scopedKey(endpoint: String, sessionId: String) throws -> String {
+        let epoch = try epochStore.loadOrCreateEpoch()
         guard epoch.count == 32 else { throw CocoaError(.fileReadCorruptFile) }
         return exampleCheckpointScopeKey(epoch: epoch, endpoint: endpoint, sessionId: sessionId)
     }
 
-    private func load() async throws -> [ExampleChatCheckpoint] {
-        let fileStore = self.fileStore
-        let data = try await Task.detached { try fileStore.read() }.value
+    private func load() throws -> [ExampleChatCheckpoint] {
+        let data = try fileStore.read()
         guard let data else { return [] }
         return try JSONDecoder().decode([ExampleChatCheckpoint].self, from: data)
             .filter { $0.version == exampleCheckpointVersion }
     }
 
-    private func save(_ records: [ExampleChatCheckpoint]) async throws {
+    private func save(_ records: [ExampleChatCheckpoint]) throws {
         let data = try JSONEncoder().encode(records)
-        let fileStore = self.fileStore
-        try await Task.detached { try fileStore.replace(with: data) }.value
+        try fileStore.replace(with: data)
+    }
+
+    private func perform<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                continuation.resume(with: Result { try operation() })
+            }
+        }
     }
 }
 
