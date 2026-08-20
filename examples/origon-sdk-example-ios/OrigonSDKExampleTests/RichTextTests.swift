@@ -54,6 +54,31 @@ final class RichTextTests: XCTestCase {
         XCTAssertEqual(Array(["a", "b", "c"].enumerated()).map(\.offset), [0, 1, 2])
     }
 
+    func testComposerRoleLabelAndDisabledMatrix() {
+        XCTAssertEqual(
+            exampleComposerPresentation(
+                hasContent: false, voiceActionAvailable: true,
+                transportBlocked: false, sending: false
+            ),
+            .init(primary: .startCall, label: "Start a call", hint: "Starts a voice session", disabled: false)
+        )
+        XCTAssertEqual(
+            exampleComposerPresentation(
+                hasContent: true, voiceActionAvailable: true,
+                transportBlocked: false, sending: false
+            ).label,
+            "Send message"
+        )
+        XCTAssertTrue(exampleComposerPresentation(
+            hasContent: true, voiceActionAvailable: false,
+            transportBlocked: true, sending: false
+        ).disabled)
+        XCTAssertTrue(exampleComposerPresentation(
+            hasContent: false, voiceActionAvailable: false,
+            transportBlocked: false, sending: false
+        ).disabled)
+    }
+
     private func visible(_ blocks: [ExampleRichBlock]) -> String {
         blocks.map { block in
             switch block {

@@ -15,6 +15,28 @@ private struct ExampleTranscriptSizeKey: PreferenceKey {
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
+struct ExampleComposerPresentation: Equatable {
+    enum Primary: Equatable { case send, startCall }
+    let primary: Primary
+    let label: String
+    let hint: String
+    let disabled: Bool
+}
+
+func exampleComposerPresentation(
+    hasContent: Bool, voiceActionAvailable: Bool, transportBlocked: Bool, sending: Bool
+) -> ExampleComposerPresentation {
+    let primary: ExampleComposerPresentation.Primary =
+        !hasContent && voiceActionAvailable ? .startCall : .send
+    return .init(
+        primary: primary,
+        label: primary == .startCall ? "Start a call" : "Send message",
+        hint: transportBlocked ? "Unavailable while the conversation reconnects or is read-only" :
+            (primary == .startCall ? "Starts a voice session" : "Sends the message and attachments"),
+        disabled: sending || transportBlocked || (!hasContent && primary == .send)
+    )
+}
+
 struct ChatView: View {
     @Binding var sessionId: String?
     let onMenuTap: () -> Void
@@ -344,6 +366,15 @@ struct ChatView: View {
         !hasContent && sdk.endpointPolicy.showsComposerVoiceAction
     }
 
+    private var composerPresentation: ExampleComposerPresentation {
+        exampleComposerPresentation(
+            hasContent: hasContent,
+            voiceActionAvailable: sdk.endpointPolicy.showsComposerVoiceAction,
+            transportBlocked: composerBlocked,
+            sending: isSending
+        )
+    }
+
     private var photoPickerFilter: PHPickerFilter {
         let policy = sdk.endpointPolicy.attachments
         switch (policy.images, policy.videos) {
@@ -382,7 +413,11 @@ struct ChatView: View {
                     .lineLimit(1...5)
                     .focused($isInputFocused)
                     .padding(.vertical, 8)
+                    .frame(minHeight: 44)
                     .disabled(composerBlocked)
+                    .accessibilityLabel("Message")
+                    .accessibilityHint(composerBlocked ? "Message entry unavailable" : "Enter a message")
+                    .accessibilitySortPriority(2)
                     .onChange(of: inputText) { newValue in
                         if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             sdk.chat.stopTyping()
@@ -453,15 +488,21 @@ struct ChatView: View {
                 .frame(width: 22, height: 22)
                 .foregroundColor(Origon.textSecondary)
                 .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
         }
         .padding(.leading, 2)
         .padding(.bottom, 3)
         .disabled(isSending || composerBlocked)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel("Add attachment")
+        .accessibilityHint("Choose a permitted photo, video, document, or audio file")
+        .accessibilitySortPriority(3)
         .simultaneousGesture(TapGesture().onEnded { isInputFocused = false })
     }
 
     private var sendOrWaveButton: some View {
         Button {
+            Haptics.light()
             if primaryIsVoice {
                 isInputFocused = false
                 onStartCall()
@@ -492,7 +533,12 @@ struct ChatView: View {
                 }
             }
         }
-        .disabled(isSending || composerBlocked || (!hasContent && !primaryIsVoice))
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .disabled(composerPresentation.disabled)
+        .accessibilityLabel(composerPresentation.label)
+        .accessibilityHint(composerPresentation.hint)
+        .accessibilitySortPriority(1)
     }
 
     private var attachmentsPreviewRow: some View {
