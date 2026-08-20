@@ -200,6 +200,16 @@ final class ChatService: ObservableObject {
         return sessionsState[id]?.connectionState ?? .connected
     }
 
+    var focusedHistoryIsAuthoritative: Bool {
+        guard let id = currentSessionId, let state = sessionsState[id] else { return false }
+        return state.loadState == .network || state.loadState == .freshEmpty
+    }
+
+    var focusedLoadState: DestinationLoadState {
+        guard let id = currentSessionId else { return .idle }
+        return sessionsState[id]?.loadState ?? .idle
+    }
+
     // MARK: - Session lifecycle
 
     /// Focus a chat session.

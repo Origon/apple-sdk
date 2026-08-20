@@ -142,6 +142,8 @@ final class SDKManager: ObservableObject {
     @Published private(set) var isLoadingSessions = false
     @Published private(set) var serverConfig: ExampleServerConfig?
     private var configReplacement = ExampleConfigReplacement()
+    private let checkpointStore = try? ExampleChatCheckpointStore.live()
+    private(set) var checkpointEndpoint: String?
 
     var endpointPolicy: ExampleEndpointPolicy { ExampleEndpointPolicy(config: serverConfig) }
 
@@ -215,6 +217,7 @@ final class SDKManager: ObservableObject {
             throw CancellationError()
         }
         self.client = newClient
+        self.checkpointEndpoint = endpoint
         self.serverConfig = configReplacement.value
         chat.clientDidChange()
         self.isReady = true
@@ -230,9 +233,32 @@ final class SDKManager: ObservableObject {
         sessions = []
         client?.close()
         client = nil
+        checkpointEndpoint = nil
         _ = configReplacement.begin()
         serverConfig = nil
         isReady = false
+    }
+
+    func checkpoint(sessionId: String) async -> ExampleChatCheckpoint? {
+        guard let checkpointStore, let endpoint = checkpointEndpoint else { return nil }
+        return try? await checkpointStore.read(endpoint: endpoint, sessionId: sessionId)
+    }
+
+    func markCheckpointSeen(
+        sessionId: String,
+        latestRowVisible: Bool,
+        sceneForeground: Bool
+    ) async {
+        guard let checkpointStore, let endpoint = checkpointEndpoint else { return }
+        try? await checkpointStore.markSeen(
+            endpoint: endpoint,
+            sessionId: sessionId,
+            messageId: exampleNewestEligibleMessageId(chat.messages),
+            authoritative: chat.focusedHistoryIsAuthoritative,
+            sceneForeground: sceneForeground,
+            detailVisible: chat.currentSessionId == sessionId,
+            latestRowVisible: latestRowVisible
+        )
     }
 
     // MARK: - Sessions (shared between call and chat)

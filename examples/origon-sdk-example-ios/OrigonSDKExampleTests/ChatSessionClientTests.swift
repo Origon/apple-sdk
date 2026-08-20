@@ -139,6 +139,50 @@ final class ChatSessionClientTests: XCTestCase {
         let afterCached = try await store.read(endpoint: "endpoint", sessionId: "session")
         XCTAssertEqual(afterCached?.lastSeenMessageId, "seed")
     }
+
+    func testViewportIntentFollowsExplicitSendButPreservesPassiveReader() {
+        let baseline: Set<String> = ["old"]
+        XCTAssertEqual(
+            exampleTranscriptChangeDecision(
+                intent: .explicitSend(previousOutgoingLocalIds: baseline),
+                outgoingLocalIds: ["old", "new"], positioned: true, wasAtTail: false
+            ),
+            .init(followTail: true, consumeIntent: true)
+        )
+        XCTAssertEqual(
+            exampleTranscriptChangeDecision(
+                intent: nil, outgoingLocalIds: [], positioned: true, wasAtTail: false
+            ),
+            .init(followTail: false, consumeIntent: false)
+        )
+        XCTAssertEqual(
+            exampleTranscriptChangeDecision(
+                intent: nil, outgoingLocalIds: [], positioned: true, wasAtTail: true
+            ),
+            .init(followTail: true, consumeIntent: false)
+        )
+    }
+
+    func testViewportRestoresStableAnchorAcrossReplacementKeyboardAndRotation() {
+        let local = Message(id: "", localId: "draft", text: "pending")
+        let delivered = Message(id: "server", localId: "draft", text: "sent")
+        XCTAssertEqual(exampleTranscriptRowId(local, index: 4), exampleTranscriptRowId(delivered, index: 9))
+        XCTAssertEqual(
+            exampleViewportRestoreTarget(
+                visibleRowIds: ["server-reader", "server-next"],
+                atTail: false,
+                tailId: "server-tail"
+            ),
+            "server-reader"
+        )
+        XCTAssertEqual(
+            exampleViewportRestoreTarget(
+                visibleRowIds: ["server-reader"], atTail: true, tailId: "server-tail"
+            ),
+            "server-tail"
+        )
+        XCTAssertEqual(exampleNewMessagesAccessibilityLabel, "New messages")
+    }
     func testCachedSnapshotPaintsBeforeNamedAccessAndCannotGrantSend() async throws {
         let fake = FakeLateChatClient()
         let service = ChatService(chatClient: fake)

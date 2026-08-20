@@ -7,6 +7,7 @@ import OrigonSDK
 let exampleCheckpointVersion = 1
 let exampleCheckpointMaximumEntries = 100
 let exampleCheckpointMaximumAge: TimeInterval = 30 * 24 * 60 * 60
+let exampleNewMessagesAccessibilityLabel = "New messages"
 
 struct ExampleChatCheckpoint: Codable, Equatable, Sendable {
     let version: Int
@@ -254,6 +255,47 @@ func exampleShouldAdvanceCheckpoint(
     newestEligibleId: String?
 ) -> Bool {
     authoritative && sceneForeground && detailVisible && latestRowVisible && newestEligibleId != nil
+}
+
+struct ExampleTranscriptRow: Identifiable {
+    let index: Int
+    let message: Message
+    var id: String { exampleTranscriptRowId(message, index: index) }
+}
+
+func exampleTranscriptRowId(_ message: Message, index: Int) -> String {
+    if let localId = message.localId, !localId.isEmpty { return "local-\(localId)" }
+    return message.id.isEmpty ? "index-\(index)" : "server-\(message.id)"
+}
+
+enum ExampleTranscriptFollowIntent: Equatable {
+    case explicitSend(previousOutgoingLocalIds: Set<String>)
+}
+
+struct ExampleTranscriptChangeDecision: Equatable {
+    let followTail: Bool
+    let consumeIntent: Bool
+}
+
+func exampleTranscriptChangeDecision(
+    intent: ExampleTranscriptFollowIntent?,
+    outgoingLocalIds: Set<String>,
+    positioned: Bool,
+    wasAtTail: Bool
+) -> ExampleTranscriptChangeDecision {
+    if case .explicitSend(let previous) = intent,
+       !outgoingLocalIds.subtracting(previous).isEmpty {
+        return .init(followTail: true, consumeIntent: true)
+    }
+    return .init(followTail: positioned && wasAtTail, consumeIntent: false)
+}
+
+func exampleViewportRestoreTarget(
+    visibleRowIds: [String],
+    atTail: Bool,
+    tailId: String?
+) -> String? {
+    atTail ? tailId : visibleRowIds.first
 }
 
 /// One pending-upload tile in the chat composer.
