@@ -124,6 +124,19 @@ final class MobileContinuityTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(SessionSummary.self, from: Data(legacy.utf8)))
     }
 
+    func testMessageDecodesAudienceMetadataAndDefaultsLegacyRowsToAll() throws {
+        let internalRow = #"{"id":"m1","metadata":{"audience":"internal"}}"#
+        let decoded = try JSONDecoder().decode(Message.self, from: Data(internalRow.utf8))
+        XCTAssertEqual(decoded.metadata.audience, .internalParticipants)
+
+        let legacyRow = #"{"id":"m2"}"#
+        let legacy = try JSONDecoder().decode(Message.self, from: Data(legacyRow.utf8))
+        XCTAssertEqual(legacy.metadata.audience, .all)
+
+        let unknown = #"{"id":"m3","metadata":{"audience":"staff"}}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Message.self, from: Data(unknown.utf8)))
+    }
+
     func testNotificationGenerationMustMatchExactly() throws {
         let suiteName = "ai.origon.sdk.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

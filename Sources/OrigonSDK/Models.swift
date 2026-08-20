@@ -33,6 +33,24 @@ public enum MessageState: String, Codable, Sendable {
     case completed
 }
 
+/// Delivery audience stamped by the chat server on every transcript row.
+public enum MessageAudience: String, Codable, Sendable {
+    /// Visible only to attached internal agents and supervisors.
+    case internalParticipants = "internal"
+    /// Visible to internal participants and the external visitor.
+    case all
+}
+
+/// Typed server metadata carried by every `Message`.
+public struct MessageMetadata: Codable, Sendable, Equatable {
+    public let audience: MessageAudience
+
+    /// `.all` preserves source compatibility for consumer-created messages.
+    public init(audience: MessageAudience = .all) {
+        self.audience = audience
+    }
+}
+
 /// Audio output route override for a voice call — the "speakerphone" concept,
 /// distinct from device selection. On iOS this maps onto
 /// `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
@@ -463,6 +481,9 @@ public struct Message: Codable, Sendable, Equatable {
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
+    /// Server-stamped delivery classification. Kept last so existing
+    /// initializers remain source-compatible and default to `.all`.
+    public let metadata: MessageMetadata
 
     public init(
         role: MessageRole = .external,
@@ -479,7 +500,8 @@ public struct Message: Codable, Sendable, Equatable {
         gallery: [MessageCard] = [],
         errorText: String? = nil,
         status: MessageStatus = .delivered,
-        state: MessageState = .completed
+        state: MessageState = .completed,
+        metadata: MessageMetadata = MessageMetadata()
     ) {
         self.role = role
         self.id = id
@@ -496,6 +518,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = errorText
         self.status = status
         self.state = state
+        self.metadata = metadata
     }
 
     public init(from decoder: Decoder) throws {
@@ -515,6 +538,8 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
+        self.metadata = try c.decodeIfPresent(MessageMetadata.self, forKey: .metadata)
+            ?? MessageMetadata()
     }
 }
 
