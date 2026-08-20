@@ -11,7 +11,8 @@ voice calls. Two screens:
 
 ## Requirements
 
-- Xcode 15+
+- Xcode 16+ with its Swift 6 package toolchain (the app remains in Swift 5
+  language mode)
 - iOS 16+ target device or simulator
 - A valid Apple Developer team for signing (configure once in Xcode)
 

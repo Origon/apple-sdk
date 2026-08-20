@@ -25,8 +25,9 @@ you pass is your Origon **endpoint**.
 
 - iOS 15.0+
 - macOS 13.0+
-- Xcode 15+
-- Swift 5.9+
+- Xcode 16+ (includes the Swift 6 package toolchain required by the example's
+  exact SwiftSoup dependency)
+- Swift 5.9+ for the SDK package; the iOS example remains in Swift 5 language mode
 
 ## Prerequisites
 

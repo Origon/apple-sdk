@@ -10,6 +10,7 @@
 		0A0A0A0A0A0A0A0A0A0A0001 /* ChatSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0002 /* ChatSessionClient.swift */; };
 		0A0A0A0A0A0A0A0A0A0A0003 /* ChatSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A0A0A0A0A0A0A0A0A0A0004 /* ChatSessionClientTests.swift */; };
 		0A0A0A0A0A0A0A0A0A0A0005 /* OrigonSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */; };
+		0B0B0B0B0B0B0B0B0B0B0001 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 0B0B0B0B0B0B0B0B0B0B0003 /* SwiftSoup */; };
 		0099F70D8F8B0EA88AD6C1E5 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67549FFD7794AEB5D310656A /* Theme.swift */; };
 		05F7D9D941441B5023BBAF58 /* CallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75CA11CB74A69A691483481 /* CallService.swift */; };
 		18C8392C92173125819024E9 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 344EF90A5D01E5964AE42A71 /* RootView.swift */; };
@@ -97,6 +98,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7F282191D098108AC0ADFCB3 /* OrigonSDK in Frameworks */,
+				0B0B0B0B0B0B0B0B0B0B0001 /* SwiftSoup in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -226,6 +228,7 @@
 			name = OrigonSDKExample;
 			packageProductDependencies = (
 				00A08C26CD60E0DE7F92C052 /* OrigonSDK */,
+				0B0B0B0B0B0B0B0B0B0B0003 /* SwiftSoup */,
 			);
 			productName = OrigonSDKExample;
 			productReference = 81B7838C404A23AB32BC62BF /* OrigonSDKExample.app */;
@@ -260,6 +263,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				997A404525145A84B77EDD9E /* XCRemoteSwiftPackageReference "apple-sdk" */,
+				0B0B0B0B0B0B0B0B0B0B0002 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FE32521E82A5F747A9C09E3D /* Products */;
@@ -554,6 +558,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		0B0B0B0B0B0B0B0B0B0B0002 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup";
+			requirement = {
+				kind = exactVersion;
+				version = 2.13.7;
+			};
+		};
 		997A404525145A84B77EDD9E /* XCRemoteSwiftPackageReference "apple-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Origon/apple-sdk";
@@ -565,6 +577,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0B0B0B0B0B0B0B0B0B0B0003 /* SwiftSoup */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0B0B0B0B0B0B0B0B0B0B0002 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
+			productName = SwiftSoup;
+		};
 		0A0A0A0A0A0A0A0A0A0A0016 /* OrigonSDK */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 997A404525145A84B77EDD9E /* XCRemoteSwiftPackageReference "apple-sdk" */;
