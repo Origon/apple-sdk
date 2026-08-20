@@ -5,6 +5,7 @@ import OrigonSDK
 /// Keeping this app-owned seam separate from `OrigonClient` lets the example's
 /// policy tests deterministically release late loader/open results without
 /// replacing or extending the public SDK API.
+@MainActor
 protocol ChatSessionClient: AnyObject {
     func sessionUpdates(
         id: String,
