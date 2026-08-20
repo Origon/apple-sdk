@@ -481,8 +481,8 @@ public struct Message: Codable, Sendable, Equatable {
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
-    /// Server-stamped delivery classification. Kept last so existing
-    /// initializers remain source-compatible and default to `.all`.
+    /// Server-stamped delivery classification. Kept last so locally
+    /// constructed values remain source-compatible and default to `.all`.
     public let metadata: MessageMetadata
 
     public init(
@@ -538,8 +538,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
-        self.metadata = try c.decodeIfPresent(MessageMetadata.self, forKey: .metadata)
-            ?? MessageMetadata()
+        self.metadata = try c.decode(MessageMetadata.self, forKey: .metadata)
     }
 }
 

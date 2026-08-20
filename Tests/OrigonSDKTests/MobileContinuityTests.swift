@@ -124,14 +124,15 @@ final class MobileContinuityTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(SessionSummary.self, from: Data(legacy.utf8)))
     }
 
-    func testMessageDecodesAudienceMetadataAndDefaultsLegacyRowsToAll() throws {
+    func testMessageRequiresDecodedAudienceMetadataButLocalConstructionDefaultsToAll() throws {
         let internalRow = #"{"id":"m1","metadata":{"audience":"internal"}}"#
         let decoded = try JSONDecoder().decode(Message.self, from: Data(internalRow.utf8))
         XCTAssertEqual(decoded.metadata.audience, .internalParticipants)
 
-        let legacyRow = #"{"id":"m2"}"#
-        let legacy = try JSONDecoder().decode(Message.self, from: Data(legacyRow.utf8))
-        XCTAssertEqual(legacy.metadata.audience, .all)
+        let missing = #"{"id":"m2"}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Message.self, from: Data(missing.utf8)))
+
+        XCTAssertEqual(Message(id: "local").metadata.audience, .all)
 
         let unknown = #"{"id":"m3","metadata":{"audience":"staff"}}"#
         XCTAssertThrowsError(try JSONDecoder().decode(Message.self, from: Data(unknown.utf8)))

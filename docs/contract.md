@@ -22,10 +22,10 @@ registers the cross-repository contracts that must change and validate together.
 
 - The wrapper mirrors apps/sdk's typed `Message.metadata.audience` as
   `MessageMetadata { audience: MessageAudience }`. The two accepted wire values
-  are `internal` and `all`; an unknown value fails decoding. Consumer-created
-  messages and legacy cached JSON with no metadata remain source-compatible and
-  default to `all`, while the Rust SDK still requires metadata on every new
-  server row before it reaches this wrapper.
+  are `internal` and `all`; omission or an unknown value fails decoding for
+  server and cached JSON. The public initializer remains source-compatible for
+  consumer-created local values by defaulting to `all`; the Rust SDK likewise
+  requires metadata on every server row before it reaches this wrapper.
 - Canonical wire production and validation are registered in
   `/home/yl/workspace/platform/cx/CONTRACT.md` and
   `/home/yl/workspace/apps/sdk/CONTRACT.md`. This wrapper only decodes the
