@@ -105,7 +105,7 @@ struct MessageBubble: View {
 
                 if !message.attachments.isEmpty {
                     VStack(alignment: isSelfUser ? .trailing : .leading, spacing: 6) {
-                        ForEach(Array(message.attachments.enumerated()), id: \.element.id) { idx, att in
+                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { idx, att in
                             AttachmentRow(attachment: att, isSelfUser: isSelfUser)
                                 .onTapGesture {
                                     previewIndex = idx
@@ -195,8 +195,7 @@ struct MessageBubble: View {
         galleryLabel: String?,
         button: MessageButton
     ) {
-        if button.buttonType == "url",
-           let url = URL(string: button.value),
+        if let url = examplePromptURL(buttonType: button.buttonType, value: button.value),
            UIApplication.shared.canOpenURL(url)
         {
             UIApplication.shared.open(url)
@@ -219,6 +218,11 @@ struct MessageBubble: View {
         timeFormatter.dateFormat = "h:mm a"
         return timeFormatter.string(from: date)
     }
+}
+
+func examplePromptURL(buttonType: String?, value: String) -> URL? {
+    guard buttonType == "url" else { return nil }
+    return ExampleRichText.safeURL(value)
 }
 
 struct ExampleMessageAuthor: Equatable {

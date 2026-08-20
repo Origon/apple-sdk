@@ -16,7 +16,12 @@ final class RichTextTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(markdown.count, 4)
         XCTAssertNil(ExampleRichText.safeURL("javascript:alert(1)"))
         XCTAssertNil(ExampleRichText.safeURL("file:///etc/passwd"))
+        XCTAssertNil(ExampleRichText.safeURL("intent://payload"))
         XCTAssertEqual(ExampleRichText.safeURL("HTTPS://example.invalid/a")?.scheme?.lowercased(), "https")
+        XCTAssertEqual(examplePromptURL(buttonType: "url", value: "https://example.invalid")?.host,
+                       "example.invalid")
+        XCTAssertNil(examplePromptURL(buttonType: "url", value: "javascript:alert(1)"))
+        XCTAssertNil(examplePromptURL(buttonType: "postback", value: "https://example.invalid"))
     }
 
     func testByteNodeDepthListAndOutputCapsFallBackWithoutDroppingAllContent() {
