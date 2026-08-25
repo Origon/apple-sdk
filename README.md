@@ -498,12 +498,12 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `ServerConfig` | full `/config` snapshot. |
 | `DisconnectReason` | structured disconnect reasons (incl. `.serverClosed(code:detail:)`). |
 | `ClientEvent` | `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`. |
-| `Message` | typed transcript line. Carries `id`, `localId`, `role`, `text`, `html`, `userId`, `userName`, `timestamp`, `attachments`, `errorText`, `status`, `state`. |
+| `Message` / `MessageMetadata` / `MessageAudience` | typed transcript line with optional `metadata` and optional closed audience (`internal` or `all`). Missing/null/empty legacy metadata remains nil; unknown non-empty audiences fail decoding. |
 | `Attachment` | uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`. |
 | `UploadProgress` | `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback. |
 | `SessionLoadPolicy`, `SessionSnapshot`, `SessionDirectorySnapshot`, load updates | Typed cache/network source, authority, refresh time, snapshots, and refresh failures. |
 | `Contact`, `SessionSummary`, `SessionHistory` | typed directory/transcript shapes carried by snapshots. |
-| `SendMessagePayload` | `text`, `html`, `attachments` (input shape for `sendMessage(id:payload:)`). |
+| `SendMessagePayload` | `text`, `html`, `attachments`, and optional `metadata` (input shape for `sendMessage(id:payload:)`). |
 | `OrigonError` | structured error with `kind`, `statusCode`, `code`, `message`. |
 
 ## License

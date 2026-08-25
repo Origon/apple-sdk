@@ -33,7 +33,7 @@ public enum MessageState: String, Codable, Sendable {
     case completed
 }
 
-/// Delivery audience stamped by the chat server on every transcript row.
+/// Closed delivery-audience vocabulary. The field holding it may be absent.
 public enum MessageAudience: String, Codable, Sendable {
     /// Visible only to attached internal agents and supervisors.
     case internalParticipants = "internal"
@@ -41,13 +41,35 @@ public enum MessageAudience: String, Codable, Sendable {
     case all
 }
 
-/// Typed server metadata carried by every `Message`.
+/// Optional message metadata. Unknown non-empty audiences fail decoding.
 public struct MessageMetadata: Codable, Sendable, Equatable {
-    public let audience: MessageAudience
+    public let audience: MessageAudience?
 
-    /// `.all` preserves source compatibility for consumer-created messages.
-    public init(audience: MessageAudience = .all) {
+    public init(audience: MessageAudience? = nil) {
         self.audience = audience
+    }
+
+    private enum CodingKeys: String, CodingKey { case audience }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let raw = try c.decodeIfPresent(String.self, forKey: .audience), !raw.isEmpty else {
+            self.audience = nil
+            return
+        }
+        guard let audience = MessageAudience(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .audience,
+                in: c,
+                debugDescription: "Unknown message audience: \(raw)"
+            )
+        }
+        self.audience = audience
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(audience, forKey: .audience)
     }
 }
 
@@ -481,9 +503,8 @@ public struct Message: Codable, Sendable, Equatable {
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
-    /// Server-stamped delivery classification. Kept last so locally
-    /// constructed values remain source-compatible and default to `.all`.
-    public let metadata: MessageMetadata
+    /// Optional server/client delivery classification.
+    public let metadata: MessageMetadata?
 
     public init(
         role: MessageRole = .external,
@@ -501,7 +522,7 @@ public struct Message: Codable, Sendable, Equatable {
         errorText: String? = nil,
         status: MessageStatus = .delivered,
         state: MessageState = .completed,
-        metadata: MessageMetadata = MessageMetadata()
+        metadata: MessageMetadata? = nil
     ) {
         self.role = role
         self.id = id
@@ -538,7 +559,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
-        self.metadata = try c.decode(MessageMetadata.self, forKey: .metadata)
+        self.metadata = try c.decodeIfPresent(MessageMetadata.self, forKey: .metadata)
     }
 }
 
@@ -559,6 +580,8 @@ public struct SendMessagePayload: Codable, Sendable {
     /// which is what disambiguates two cards sharing a button value. Leave
     /// nil for a plain button reply.
     public let galleryLabel: String?
+    /// Optional participant/monitor audience metadata.
+    public let metadata: MessageMetadata?
 
     /// Both prompt keys are `Optional`, so Swift's synthesised encoder
     /// omits them when nil — an ordinary message carries neither key.
@@ -567,13 +590,15 @@ public struct SendMessagePayload: Codable, Sendable {
         html: String? = nil,
         attachments: [Attachment] = [],
         value: String? = nil,
-        galleryLabel: String? = nil
+        galleryLabel: String? = nil,
+        metadata: MessageMetadata? = nil
     ) {
         self.text = text
         self.html = html
         self.attachments = attachments
         self.value = value
         self.galleryLabel = galleryLabel
+        self.metadata = metadata
     }
 }
 
