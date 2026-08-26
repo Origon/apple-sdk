@@ -13,8 +13,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "COrigonSDK",
-            url: "https://github.com/Origon/apple-sdk/releases/download/v0.3.1/COrigonSDK.xcframework.zip",
-            checksum: "100aee0aeb5c5c3fa3ae66bb732791a08f8dd72ab236a1f9030deb7647198858"
+            url: "https://github.com/Origon/apple-sdk/releases/download/v0.3.2/COrigonSDK.xcframework.zip",
+            checksum: "6ffdd5b33a0fb63f0351ee7cf8c8f1b623f7259a8510a223355b3b5b835ea5d9"
         ),
         .target(
             name: "OrigonSDK",
@@ -33,11 +33,6 @@ let package = Package(
                 .linkedFramework("VideoToolbox", .when(platforms: [.macOS])),
                 .linkedFramework("ScreenCaptureKit", .when(platforms: [.macOS])),
             ]
-        ),
-        .testTarget(
-            name: "OrigonSDKTests",
-            dependencies: ["OrigonSDK"],
-            path: "Tests/OrigonSDKTests"
         ),
     ]
 )
