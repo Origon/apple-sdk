@@ -64,6 +64,16 @@ if (( library_count == 0 )); then
   exit 2
 fi
 
+wrapper="$repo_dir/Sources/OrigonSDK/OrigonClient.swift"
+grep -q 'public func sendDtmf(id: String, digit: Character)' "$wrapper" || {
+  echo "Swift wrapper is missing sendDtmf(id:digit:)" >&2
+  exit 1
+}
+if grep -Eq 'public (func|var) (receiveDtmf|onDtmf|dtmfReceived)' "$wrapper"; then
+  echo "Swift wrapper exposes an unsupported DTMF receive API" >&2
+  exit 1
+fi
+
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo"

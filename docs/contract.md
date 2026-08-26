@@ -130,7 +130,10 @@ registers the cross-repository contracts that must change and validate together.
   validation; errors never echo the symbol.
 - This lane is client-to-flow and send-only. The ABI adds no duration, inbound
   callback, tone, haptic, or PCM synthesis. The high-level Swift API and its
-  consumer integration land separately against the exact frozen artifact.
+  consumer integration expose `OrigonClient.sendDtmf(id:digit:)` with a
+  `Character` argument and reject every value outside uppercase ASCII
+  `0-9*#A-D` before calling the ABI. Neither local validation nor native errors
+  echo the symbol, and a failed request is never retried by the wrapper.
 
 ## Release gate
 

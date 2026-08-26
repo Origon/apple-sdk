@@ -202,6 +202,9 @@ while true {
 // Mute (per session).
 try client.setMute(id: response.sessionId, muted: true)
 
+// Send one DTMF digit to the active CX flow. Valid symbols are 0-9, *, #, A-D.
+try client.sendDtmf(id: response.sessionId, digit: "5")
+
 // Audio output route — process-global, so no session id. Maps onto
 // `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
 // across reconnects and OS route changes (headset plug/unplug). Resets to
@@ -464,6 +467,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `close()` / `OrigonClient.clearAllChatCaches()` | Close joins native loaders and cache writers; after all clients close, atomically clear every cached scope. |
 | `joinCall(_:)` / `joinChat(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
 | `endSession(_:)` / `endAllSessions()` | Close a single / every session. |
+| `sendDtmf(id:digit:)` | Voice — send one uppercase ASCII `0-9`, `*`, `#`, or `A-D` control symbol to the CX flow. Produces no local tone or haptic. |
 | `setMute(id:muted:)` / `setMuteAll(muted:)` | Voice — absolute mute. |
 | `setAudioOutput(_:)` | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
 | `sendMessage(id:payload:)` | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |

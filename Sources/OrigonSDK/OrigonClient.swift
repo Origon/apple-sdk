@@ -670,6 +670,36 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Voice controls
 
+    /// Send one DTMF symbol to the active voice session's CX flow.
+    ///
+    /// `digit` must be one uppercase ASCII symbol from `0-9`, `*`, `#`, or
+    /// `A-D`. The SDK sends control data only; it does not synthesize audio,
+    /// tones, clicks, or haptics.
+    public func sendDtmf(id: String, digit: Character) throws {
+        let encoded = try Self.validateDtmfDigit(digit)
+        var err = SessionError()
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_send_dtmf(handle, $0, encoded, &err)
+            }
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    static func validateDtmfDigit(_ digit: Character) throws -> CChar {
+        guard
+            let ascii = digit.asciiValue,
+            "0123456789*#ABCD".utf8.contains(ascii)
+        else {
+            throw OrigonError(
+                kind: .other,
+                code: "invalid_dtmf_digit",
+                message: "DTMF digit must be one uppercase ASCII symbol"
+            )
+        }
+        return CChar(bitPattern: ascii)
+    }
+
     public func setMute(id: String, muted: Bool) throws {
         var err = SessionError()
         let rc = try withHandle { handle in
