@@ -29,6 +29,10 @@ while IFS= read -r header; do
     echo "$header is missing session_client_open_chat" >&2
     exit 1
   }
+  grep -q 'session_client_send_dtmf' "$header" || {
+    echo "$header is missing session_client_send_dtmf" >&2
+    exit 1
+  }
 done < <(find "$artifact" -type f -name session_bridge.h -print)
 if (( header_count == 0 )); then
   echo "XCFramework has no session_bridge.h" >&2
@@ -41,6 +45,10 @@ while IFS= read -r library; do
   symbols="$(strings "$library")"
   grep -Eq '^_?session_client_open_chat$' <<<"$symbols" || {
     echo "$library is missing session_client_open_chat" >&2
+    exit 1
+  }
+  grep -Eq '^_?session_client_send_dtmf$' <<<"$symbols" || {
+    echo "$library is missing session_client_send_dtmf" >&2
     exit 1
   }
   for retired in session_client_get_sessions session_client_get_session \
