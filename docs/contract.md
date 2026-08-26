@@ -32,6 +32,20 @@ registers the cross-repository contracts that must change and validate together.
   `/home/yl/workspace/apps/sdk/CONTRACT.md`. This wrapper only decodes the
   already-authorized projection and never chooses or rewrites the audience.
 
+## Authoritative typing identity
+
+- The 0.3.2 candidate hardcuts public `.typing(sessionId:isTyping:)` to
+  `.typing(sessionId:state:)`, where `TypingState.participants` preserves the
+  native SDK's stable first-activation order and canonical participant, role,
+  optional user identity, and audience fields.
+- The C layout is unchanged: `SessionEvent.typing` remains the aggregate
+  compatibility bit while the authoritative snapshot uses the existing owned
+  `message_json` slot and is released by `session_event_clear`. The wrapper
+  decodes that JSON fail-closed and never persists or logs typing identity.
+- The shipped iOS app and this repository's example render the first active
+  participant with their existing one-avatar typing row and clear on empty or
+  terminal/local lifecycle events.
+
 ## Mobile chat continuity and push
 
 - `ClientConfig.installation_id` is supplied by this wrapper as a random,

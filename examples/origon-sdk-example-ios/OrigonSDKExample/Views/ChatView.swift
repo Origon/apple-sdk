@@ -277,7 +277,7 @@ struct ChatView: View {
                     }
 
                     if sdk.chat.isTyping {
-                        TypingIndicator()
+                        TypingIndicator(author: exampleTypingAuthor(sdk.chat.typingParticipant))
                             .id("typing")
                             .transition(.opacity)
                     }

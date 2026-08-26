@@ -244,6 +244,22 @@ func exampleMessageAuthor(_ message: Message) -> ExampleMessageAuthor {
     }
 }
 
+func exampleTypingAuthor(_ participant: TypingParticipant?) -> ExampleMessageAuthor {
+    guard let participant else { return .init(key: "assistant", displayName: "Assistant") }
+    let name = participant.userName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let userID = participant.userId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch participant.role {
+    case .ai, .system:
+        return .init(key: "assistant", displayName: "Assistant")
+    case .external:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? participant.participantId)
+        return .init(key: "external:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Visitor")
+    case .user:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? participant.participantId)
+        return .init(key: "agent:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Agent")
+    }
+}
+
 func exampleShouldShowAuthor(_ message: Message, previous: Message?) -> Bool {
     guard message.action?.isEmpty != false else { return false }
     guard let previous, previous.action?.isEmpty != false else { return true }

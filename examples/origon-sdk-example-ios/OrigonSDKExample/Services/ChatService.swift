@@ -52,6 +52,7 @@ final class ChatService: ObservableObject {
     struct SessionUIState: Equatable {
         var messages: [Message] = []
         var isTyping: Bool = false
+        var typingState: TypingState = .init()
         /// Cache is presentation only. Sending is enabled exclusively after
         /// the named explicit-navigation access operation wins this epoch.
         var accessGranted: Bool = false
@@ -158,6 +159,11 @@ final class ChatService: ObservableObject {
     var isTyping: Bool {
         guard let id = currentSessionId else { return false }
         return sessionsState[id]?.isTyping ?? false
+    }
+
+    var typingParticipant: TypingParticipant? {
+        guard let id = currentSessionId else { return nil }
+        return sessionsState[id]?.typingState.participants.first
     }
 
     /// Composer-tile list for the focused session, or the draft list
@@ -502,6 +508,7 @@ final class ChatService: ObservableObject {
         sessionsState[id]?.connectionState = .ended
         sessionsState[id]?.accessGranted = false
         sessionsState[id]?.isTyping = false
+        sessionsState[id]?.typingState = .init()
     }
 
     // MARK: - Attachments
@@ -634,8 +641,9 @@ final class ChatService: ObservableObject {
         case .messageUpdated(_, let key, let msg):
             updateMessage(in: sid, key: key, message: msg)
 
-        case .typing(_, let isTyping):
-            sessionsState[sid]?.isTyping = isTyping
+        case .typing(_, let state):
+            sessionsState[sid]?.typingState = state
+            sessionsState[sid]?.isTyping = !state.participants.isEmpty
 
         case .reconnecting:
             guard sessionsState[sid]?.connectionState != .ended else { return }
@@ -650,6 +658,7 @@ final class ChatService: ObservableObject {
 
         case .disconnected(_, let reason):
             sessionsState[sid]?.isTyping = false
+            sessionsState[sid]?.typingState = .init()
             sessionsState[sid]?.accessGranted = false
             if reason == .localClose || reason == .sessionEnded {
                 sessionsState[sid]?.connectionState = .ended
@@ -660,6 +669,7 @@ final class ChatService: ObservableObject {
 
         case .chatSessionEnded:
             sessionsState[sid]?.isTyping = false
+            sessionsState[sid]?.typingState = .init()
             sessionsState[sid]?.accessGranted = false
             sessionsState[sid]?.connectionState = .ended
 

@@ -297,8 +297,8 @@ while let event = client.pollEvent() {
         // Store under message.localId ?? message.id
     case .messageUpdated(let sid, let id, let message):
         // Look up the row by id (matches the original localId / message.id)
-    case .typing(let sid, let isTyping):
-        // Show / hide "typing…" indicator
+    case .typing(let sid, let state):
+        // Render state.participants.first; hide when participants is empty.
     default: break
     }
 }
@@ -499,6 +499,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `DisconnectReason` | structured disconnect reasons (incl. `.serverClosed(code:detail:)`). |
 | `ClientEvent` | `.messageAdded`, `.messageUpdated`, `.connected`, `.reconnecting`, `.reconnected`, `.peerAttached`, `.peerDetached`, `.disconnected`, `.callError`, `.audioRouteChanged`, `.controlUpdated`, `.typing`, `.sessionUpdated`. Every case carries `sessionId`. `.audioRouteChanged` carries the now-current `AudioOutputRoute` (drive a speaker toggle from `route == .speaker`); it fires on OS-driven route changes (headset plug/unplug) as well as your own `setAudioOutput`. |
 | `Message` / `MessageMetadata` / `MessageAudience` | typed transcript line with optional `metadata` and optional closed audience (`internal` or `all`). Missing/null/empty legacy metadata remains nil; unknown non-empty audiences fail decoding. |
+| `TypingState` / `TypingParticipant` | ordered authoritative active-typer snapshot. Render `participants.first` for the one-avatar UI; treat it as ephemeral and never persist/log it. |
 | `Attachment` | uploaded-media descriptor: `id`, `name`, `contentType`, `url`, and an optional client-side `localUrl` preview (kept on the local `Message`, stripped from the wire). Returned by `uploadAttachment(...)`, carried on `Message.attachments`, and passed back into `SendMessagePayload.attachments`. |
 | `UploadProgress` | `bytesUploaded`, optional `totalBytes`, optional `percent` (both `nil` when the transport reports no content length). Passed to the `uploadAttachment` `onProgress` callback. |
 | `SessionLoadPolicy`, `SessionSnapshot`, `SessionDirectorySnapshot`, load updates | Typed cache/network source, authority, refresh time, snapshots, and refresh failures. |

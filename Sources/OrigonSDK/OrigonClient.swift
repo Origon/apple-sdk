@@ -997,6 +997,15 @@ public final class OrigonClient: @unchecked Sendable {
         return try? JSONDecoder().decode(Message.self, from: data)
     }
 
+    /// Decode the authoritative typing snapshot carried in the existing
+    /// `message_json` slot. Malformed payloads are dropped fail-closed.
+    private static func decodeTypingState(_ cstr: UnsafeMutablePointer<CChar>?) -> TypingState? {
+        guard let cstr else { return nil }
+        let json = String(cString: cstr)
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TypingState.self, from: data)
+    }
+
     /// Wire shape of the `chatSessionEnded` payload, which rides the FFI's
     /// `message_json` slot as `{reason, acw?}` (same field the message
     /// events use). `acw` is present only on an agent participant's stream.
@@ -1048,7 +1057,8 @@ public final class OrigonClient: @unchecked Sendable {
             return .controlUpdated(sessionId: sid, control: SessionControl.fromC(ev.control))
 
         case SESSION_EVENT_TYPING:
-            return .typing(sessionId: sid, isTyping: ev.typing != 0)
+            guard let state = Self.decodeTypingState(ev.message_json) else { return nil }
+            return .typing(sessionId: sid, state: state)
 
         case SESSION_EVENT_CONNECTED:
             return .connected(sessionId: sid)

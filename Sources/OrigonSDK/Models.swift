@@ -41,6 +41,39 @@ public enum MessageAudience: String, Codable, Sendable {
     case all
 }
 
+/// Server-stamped identity for one active remote typer. This value is
+/// ephemeral; consumers must not persist or log it.
+public struct TypingParticipant: Codable, Sendable, Equatable {
+    public let participantId: String
+    public let role: MessageRole
+    public let userId: String?
+    public let userName: String?
+    public let audience: MessageAudience
+
+    public init(
+        participantId: String,
+        role: MessageRole,
+        userId: String? = nil,
+        userName: String? = nil,
+        audience: MessageAudience
+    ) {
+        self.participantId = participantId
+        self.role = role
+        self.userId = userId
+        self.userName = userName
+        self.audience = audience
+    }
+}
+
+/// Stable first-activation-ordered snapshot of active remote typers.
+public struct TypingState: Codable, Sendable, Equatable {
+    public let participants: [TypingParticipant]
+
+    public init(participants: [TypingParticipant] = []) {
+        self.participants = participants
+    }
+}
+
 /// Optional message metadata. Unknown non-empty audiences fail decoding.
 public struct MessageMetadata: Codable, Sendable, Equatable {
     public let audience: MessageAudience?
@@ -798,7 +831,7 @@ public enum ClientEvent: Sendable {
     case messageUpdated(sessionId: String, id: String, message: Message)
     case sessionUpdated(sessionId: String, newSessionId: String)
     case controlUpdated(sessionId: String, control: SessionControl)
-    case typing(sessionId: String, isTyping: Bool)
+    case typing(sessionId: String, state: TypingState)
     case connected(sessionId: String)
     case reconnecting(sessionId: String, attempt: UInt32, reason: DisconnectReason)
     case reconnected(sessionId: String)
