@@ -34,7 +34,7 @@ registers the cross-repository contracts that must change and validate together.
 
 ## Authoritative typing identity
 
-- The 0.3.2 candidate hardcuts public `.typing(sessionId:isTyping:)` to
+- Version 0.3.2 hardcuts public `.typing(sessionId:isTyping:)` to
   `.typing(sessionId:state:)`, where `TypingState.participants` preserves the
   native SDK's stable first-activation order and canonical participant, role,
   optional user identity, and audience fields.
