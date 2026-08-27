@@ -121,6 +121,20 @@ registers the cross-repository contracts that must change and validate together.
   Provider invalid-token cleanup and the server's 90-day endpoint TTL are the
   uninstall cleanup path; uninstall cannot send an unregister call.
 
+## Voice DTMF ABI
+
+- The local XCFramework must expose the additive C producer
+  `session_client_send_dtmf(handle,id,char,out_err)` in every header and static
+  library slice before the Swift wrapper may expose it. Rust accepts exactly
+  one uppercase ASCII `0-9*#A-D` symbol and owns voice/session/reconnect
+  validation; errors never echo the symbol.
+- This lane is client-to-flow and send-only. The ABI adds no duration, inbound
+  callback, tone, haptic, or PCM synthesis. The high-level Swift API and its
+  consumer integration expose `OrigonClient.sendDtmf(id:digit:)` with a
+  `Character` argument and reject every value outside uppercase ASCII
+  `0-9*#A-D` before calling the ABI. Neither local validation nor native errors
+  echo the symbol, and a failed request is never retried by the wrapper.
+
 ## Release gate
 
 The XCFramework is a local artifact until an owner publishes it. Before any

@@ -3,6 +3,29 @@ import XCTest
 @testable import OrigonSDK
 
 final class MobileContinuityTests: XCTestCase {
+    func testDtmfValidationAcceptsExactlyThePublicAlphabet() throws {
+        for digit in "0123456789*#ABCD" {
+            XCTAssertEqual(
+                UInt8(bitPattern: try OrigonClient.validateDtmfDigit(digit)),
+                digit.asciiValue
+            )
+        }
+    }
+
+    func testDtmfValidationRejectsLowercaseAndNonAsciiWithoutEchoingInput() {
+        for digit: Character in ["a", "d", "é", "１", "1\u{FE0F}"] {
+            XCTAssertThrowsError(try OrigonClient.validateDtmfDigit(digit)) { error in
+                let typed = error as? OrigonError
+                XCTAssertEqual(typed?.kind, .other)
+                XCTAssertEqual(typed?.code, "invalid_dtmf_digit")
+                XCTAssertEqual(
+                    typed?.description,
+                    "DTMF digit must be one uppercase ASCII symbol"
+                )
+            }
+        }
+    }
+
     func testNativeHandleGateAllowsConcurrentCallsAndCloseWaitsForEveryLease() throws {
         let handle = try XCTUnwrap(OpaquePointer(bitPattern: 1))
         let gate = NativeHandleGate(handle)
