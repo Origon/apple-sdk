@@ -32,9 +32,39 @@ import OrigonSDK
 @MainActor
 final class ChatService: ObservableObject {
 
+    enum DestinationLoadState: Equatable {
+        case idle
+        case loading
+        case cached
+        case network
+        case freshEmpty
+        case refreshFailed(cachedShown: Bool)
+        case failed
+    }
+
+    enum ConnectionState: Equatable {
+        case connected
+        case reconnecting
+        case dropped
+        case ended
+    }
+
     struct SessionUIState: Equatable {
         var messages: [Message] = []
         var isTyping: Bool = false
+        var typingState: TypingState = .init()
+        /// Cache is presentation only. Sending is enabled exclusively after
+        /// the named explicit-navigation access operation wins this epoch.
+        var accessGranted: Bool = false
+        /// The transcript and composer draft outlive transport loss. Only a
+        /// clean end is read-only; a dropped session is resumed under the
+        /// same id by the next accepted send.
+        var connectionState: ConnectionState = .connected
+        var loadState: DestinationLoadState = .idle
+        /// Rows received from the live event lane while a finite refresh is
+        /// running. Reconciliation retains these until the server snapshot
+        /// contains their server id.
+        var liveMessageKeys: Set<String> = []
         /// Composer-tile state for this session. Survives session
         /// switches so an upload kicked off in session A doesn't vanish
         /// when the user peeks at session B.
@@ -71,13 +101,23 @@ final class ChatService: ObservableObject {
     @Published private(set) var draftPendingAttachments: [PendingAttachment] = []
 
     private weak var sdk: SDKManager?
+    private let testChatClient: (any ChatSessionClient)?
     private var cancellables = Set<AnyCancellable>()
+    private var clientEpoch: UInt64 = 0
+    private var destinationEpoch: UInt64 = 0
+    private var refetchEpoch: [String: UInt64] = [:]
+    private var refetchTasks: [String: Task<Void, Never>] = [:]
+    private var acceptingEvents = true
 
     /// In-flight lazy session-start. Racing callers (e.g. the user taps
     /// send twice with no session yet) all `await` this single task so
     /// only one `POST /session/start` fires and the draft → session
     /// migration happens exactly once.
     private var sessionStartTask: Task<String, Error>?
+
+    init(chatClient: (any ChatSessionClient)? = nil) {
+        self.testChatClient = chatClient
+    }
 
     /// SDKManager creates this and calls `bind(to:)` once it can pass `self`.
     /// Subscribes to the manager's event stream so messages and typing
@@ -87,6 +127,24 @@ final class ChatService: ObservableObject {
         manager.events
             .sink { [weak self] event in self?.handleEvent(event) }
             .store(in: &cancellables)
+    }
+
+    /// Fence every in-flight destination operation before the manager
+    /// installs or tears down a client. Late cache, network, and named-open
+    /// results can finish, but cannot publish into the replacement endpoint.
+    func clientWillChange() {
+        acceptingEvents = false
+        clientEpoch &+= 1
+        destinationEpoch &+= 1
+        for id in sessionsState.keys {
+            sessionsState[id]?.accessGranted = false
+        }
+    }
+
+    func clientDidChange() { acceptingEvents = true }
+
+    private var destinationClient: (any ChatSessionClient)? {
+        testChatClient ?? sdk?.chatClient
     }
 
     // MARK: - Focused-session accessors
@@ -103,6 +161,11 @@ final class ChatService: ObservableObject {
         return sessionsState[id]?.isTyping ?? false
     }
 
+    var typingParticipant: TypingParticipant? {
+        guard let id = currentSessionId else { return nil }
+        return sessionsState[id]?.typingState.participants.first
+    }
+
     /// Composer-tile list for the focused session, or the draft list
     /// when no session is open yet.
     var pendingAttachments: [PendingAttachment] {
@@ -113,14 +176,44 @@ final class ChatService: ObservableObject {
     }
 
     var attachmentsAllowed: Bool {
-        guard let client = sdk?.client else { return false }
-        let p = client.attachmentPolicy
-        return p.images.enabled || p.documents.enabled
-            || p.videos.enabled || p.audio.enabled
+        ExampleAttachmentCategory.allCases.contains {
+            sdk?.endpointPolicy.attachments.allows($0) == true
+        }
+    }
+
+    func attachmentAllowed(contentType: String) -> Bool {
+        sdk?.endpointPolicy.attachments.allows(
+            ExampleAttachmentCategory(contentType: contentType)
+        ) == true
     }
 
     var hasUploadingAttachments: Bool {
         pendingAttachments.contains { $0.status == .uploading }
+    }
+
+    var canSendFocusedSession: Bool {
+        guard let id = currentSessionId else { return true }
+        guard let state = sessionsState[id] else { return false }
+        switch state.connectionState {
+        case .connected: return state.accessGranted
+        case .dropped: return true
+        case .reconnecting, .ended: return false
+        }
+    }
+
+    var currentConnectionState: ConnectionState {
+        guard let id = currentSessionId else { return .connected }
+        return sessionsState[id]?.connectionState ?? .connected
+    }
+
+    var focusedHistoryIsAuthoritative: Bool {
+        guard let id = currentSessionId, let state = sessionsState[id] else { return false }
+        return state.loadState == .network || state.loadState == .freshEmpty
+    }
+
+    var focusedLoadState: DestinationLoadState {
+        guard let id = currentSessionId else { return .idle }
+        return sessionsState[id]?.loadState ?? .idle
     }
 
     // MARK: - Session lifecycle
@@ -133,40 +226,106 @@ final class ChatService: ObservableObject {
     ///   chat channel for that id (and refreshes the sidebar list so the
     ///   newly-active session is visible there).
     func openSession(id: String?) async {
+        destinationEpoch &+= 1
+        let operation = destinationEpoch
+        let epoch = clientEpoch
         guard let id else {
             currentSessionId = nil
             return
         }
-        if sessionsState[id] != nil {
-            currentSessionId = id
-            adoptDrafts(into: id)
+        guard let client = destinationClient else { return }
+
+        var state = sessionsState[id] ?? SessionUIState()
+        state.accessGranted = false
+        state.loadState = .loading
+        sessionsState[id] = state
+        currentSessionId = id
+        adoptDrafts(into: id)
+
+        async let history: Void = loadDestination(
+            id: id, client: client, clientEpoch: epoch, operation: operation
+        )
+        async let access: Void = acquireDestination(
+            id: id, client: client, clientEpoch: epoch, operation: operation
+        )
+        _ = await (history, access)
+        guard destinationIsCurrent(id: id, clientEpoch: epoch, operation: operation) else {
             return
         }
-        guard let client = sdk?.client else { return }
+        try? await sdk?.refreshSessions()
+    }
+
+    private func loadDestination(
+        id: String,
+        client: any ChatSessionClient,
+        clientEpoch epoch: UInt64,
+        operation: UInt64
+    ) async {
         do {
-            // View-only open: fetch the history and render it, but do NOT
-            // call `startChat` — that verb exists to open a session WITH the
-            // visitor's first message, and opening one here just to read a
-            // past conversation would attach a participant and start a chat
-            // nobody has spoken in. The session goes live on the first send.
-            for try await update in try client.sessionUpdates(id: id) {
+            for try await update in try client.sessionUpdates(id: id, policy: .cacheThenNetwork) {
+                guard destinationIsCurrent(id: id, clientEpoch: epoch, operation: operation) else {
+                    return
+                }
                 switch update {
                 case .snapshot(let snapshot):
                     var state = sessionsState[id] ?? SessionUIState()
-                    state.messages = snapshot.session.history
+                    state = Self.reconciling(snapshot.session.history, into: state)
+                    if snapshot.authoritative {
+                        state.loadState = snapshot.session.history.isEmpty ? .freshEmpty : .network
+                    } else {
+                        state.loadState = .cached
+                    }
                     sessionsState[id] = state
-                    currentSessionId = id
-                    adoptDrafts(into: id)
-                case .refreshFailed(let error, let cachedSnapshotEmitted):
-                    if !cachedSnapshotEmitted { throw error }
-                    self.error = "Couldn't refresh conversation: \(error.localizedDescription)"
+                case .refreshFailed(let refreshError, let cachedSnapshotEmitted):
+                    sessionsState[id]?.loadState = .refreshFailed(cachedShown: cachedSnapshotEmitted)
+                    error = cachedSnapshotEmitted
+                        ? "Showing saved messages. Couldn't refresh this conversation."
+                        : "Failed to load conversation: \(refreshError.localizedDescription)"
                 }
             }
-            // Refresh sidebar so the now-open session shows up.
-            try? await sdk?.refreshSessions()
         } catch {
-            self.error = "Failed to open session: \(error.localizedDescription)"
+            guard destinationIsCurrent(id: id, clientEpoch: epoch, operation: operation) else {
+                return
+            }
+            sessionsState[id]?.loadState = .failed
+            self.error = "Failed to load conversation: \(error.localizedDescription)"
         }
+    }
+
+    private func acquireDestination(
+        id: String,
+        client: any ChatSessionClient,
+        clientEpoch epoch: UInt64,
+        operation: UInt64
+    ) async {
+        do {
+            _ = try await client.acquireChatAccess(
+                sessionId: id,
+                intent: .explicitNavigation
+            )
+            guard destinationIsCurrent(id: id, clientEpoch: epoch, operation: operation) else {
+                return
+            }
+            sessionsState[id]?.accessGranted = true
+            if sessionsState[id]?.connectionState != .ended {
+                sessionsState[id]?.connectionState = .connected
+            }
+        } catch {
+            guard destinationIsCurrent(id: id, clientEpoch: epoch, operation: operation) else {
+                return
+            }
+            sessionsState[id]?.accessGranted = false
+            self.error = "Conversation is view-only: \(error.localizedDescription)"
+        }
+    }
+
+    private func destinationIsCurrent(
+        id: String,
+        clientEpoch: UInt64,
+        operation: UInt64
+    ) -> Bool {
+        !Task.isCancelled && self.clientEpoch == clientEpoch &&
+            destinationEpoch == operation && currentSessionId == id
     }
 
     /// Move any draft tiles onto the session being focused.
@@ -213,8 +372,6 @@ final class ChatService: ObservableObject {
         let completed = pendingAttachments
             .compactMap { $0.status == .completed ? $0.attachment : nil }
         guard !trimmed.isEmpty || !completed.isEmpty else { return }
-        guard let client = sdk?.client else { return }
-
         let payload = SendMessagePayload(
             text: trimmed.isEmpty ? nil : trimmed,
             attachments: completed,
@@ -224,12 +381,24 @@ final class ChatService: ObservableObject {
         do {
             let id: String
             if let existing = currentSessionId {
-                id = existing
-                _ = try await Task.detached {
-                    try client.sendMessage(id: existing, payload: payload)
-                }.value
+                guard let state = sessionsState[existing] else { return }
+                guard state.connectionState != .ended else {
+                    self.error = "This conversation has ended and is read-only."
+                    return
+                }
+                if state.connectionState == .dropped {
+                    id = try await openAndSend(payload: payload, resuming: existing)
+                } else {
+                    guard state.accessGranted && state.connectionState == .connected else {
+                        self.error = "Conversation is reconnecting. Try again when it is ready."
+                        return
+                    }
+                    guard let client = destinationClient else { return }
+                    id = existing
+                    try await client.sendMessage(id: existing, payload: payload)
+                }
             } else {
-                id = try await openAndSend(payload: payload)
+                id = try await openAndSend(payload: payload, resuming: nil)
             }
 
             // Completed attachments are now owned by the sent message;
@@ -329,15 +498,17 @@ final class ChatService: ObservableObject {
         try? client.stopTyping(id: id)
     }
 
-    /// End the focused SDK chat session and drop its UI state. Other
-    /// open sessions are untouched.
+    /// End the focused SDK chat session without deleting its transcript or
+    /// draft. The terminal conversation remains selected and read-only.
     func endCurrentSession() {
         guard let id = currentSessionId else { return }
         if let client = sdk?.client {
             try? client.endSession(id)
         }
-        sessionsState[id] = nil
-        currentSessionId = nil
+        sessionsState[id]?.connectionState = .ended
+        sessionsState[id]?.accessGranted = false
+        sessionsState[id]?.isTyping = false
+        sessionsState[id]?.typingState = .init()
     }
 
     // MARK: - Attachments
@@ -349,6 +520,10 @@ final class ChatService: ObservableObject {
     /// server-issued ``Attachment``; on failure to `.error` with a
     /// human-friendly message keyed off ``OrigonError`` codes.
     func uploadFile(data: Data, fileName: String, contentType: String, previewImage: UIImage?) {
+        guard attachmentAllowed(contentType: contentType) else {
+            error = "This file type is disabled for this endpoint."
+            return
+        }
         let localId = UUID().uuidString
         let pending = PendingAttachment(
             id: localId,
@@ -417,6 +592,10 @@ final class ChatService: ObservableObject {
     /// End every active SDK chat session and clear UI state. Called on
     /// logout via `SDKManager.teardown`.
     func destroy() {
+        clientWillChange()
+        refetchTasks.values.forEach { $0.cancel() }
+        refetchTasks = [:]
+        refetchEpoch = [:]
         if let client = sdk?.client {
             for id in sessionsState.keys {
                 try? client.endSession(id)
@@ -432,6 +611,7 @@ final class ChatService: ObservableObject {
     // MARK: - Event handling
 
     private func handleEvent(_ event: ClientEvent) {
+        guard acceptingEvents else { return }
         let sid = event.sessionId
 
         // `sessionUpdated` may arrive for an id we don't hold state for
@@ -453,61 +633,190 @@ final class ChatService: ObservableObject {
 
         switch event {
         case .messageAdded(_, let msg):
-            sessionsState[sid]?.messages.append(msg)
+            var state = sessionsState[sid] ?? SessionUIState()
+            state.messages.append(msg)
+            state.liveMessageKeys.insert(Self.messageKey(msg))
+            sessionsState[sid] = state
 
         case .messageUpdated(_, let key, let msg):
             updateMessage(in: sid, key: key, message: msg)
 
-        case .typing(_, let isTyping):
-            sessionsState[sid]?.isTyping = isTyping
+        case .typing(_, let state):
+            sessionsState[sid]?.typingState = state
+            sessionsState[sid]?.isTyping = !state.participants.isEmpty
+
+        case .reconnecting:
+            guard sessionsState[sid]?.connectionState != .ended else { return }
+            sessionsState[sid]?.connectionState = .reconnecting
+            sessionsState[sid]?.accessGranted = false
+
+        case .reconnected:
+            guard sessionsState[sid]?.connectionState != .ended else { return }
+            sessionsState[sid]?.connectionState = .connected
+            sessionsState[sid]?.accessGranted = true
+            refetchHistory(for: sid)
 
         case .disconnected(_, let reason):
-            // Local close path is the one we initiated via
-            // `endCurrentSession` / `destroy`; UI state is already gone.
-            // For server / network closes, drop state so the next
-            // `openSession` refetches and reopens cleanly.
-            if reason != .localClose {
-                if sid == currentSessionId {
-                    error = "Chat disconnected"
-                }
-                sessionsState[sid] = nil
-                if currentSessionId == sid { currentSessionId = nil }
+            sessionsState[sid]?.isTyping = false
+            sessionsState[sid]?.typingState = .init()
+            sessionsState[sid]?.accessGranted = false
+            if reason == .localClose || reason == .sessionEnded {
+                sessionsState[sid]?.connectionState = .ended
+            } else if sessionsState[sid]?.connectionState != .ended {
+                sessionsState[sid]?.connectionState = .dropped
+                refetchHistory(for: sid)
             }
 
         case .chatSessionEnded:
-            // Clean end — the agent or flow closed the chat. State is
-            // deliberately KEPT so the user stays on the transcript, and
-            // there is no error toast: this is not a failure. A production
-            // app would also flip the composer read-only and show an
-            // "ended" divider; that is UI work this example leaves out.
-            break
+            sessionsState[sid]?.isTyping = false
+            sessionsState[sid]?.typingState = .init()
+            sessionsState[sid]?.accessGranted = false
+            sessionsState[sid]?.connectionState = .ended
 
-        case .sessionUpdated, .connected, .reconnecting, .reconnected,
+        case .connected:
+            guard sessionsState[sid]?.connectionState != .ended else { return }
+            sessionsState[sid]?.connectionState = .connected
+            sessionsState[sid]?.accessGranted = true
+
+        case .sessionUpdated,
              .controlUpdated, .peerAttached, .peerDetached, .callError,
              .audioRouteChanged:
             break
         }
     }
 
+    /// App lifecycle hook: fill a possible event gap without performing
+    /// passive active-chat restoration or changing destination ownership.
+    func refetchFocusedSession() {
+        guard let id = currentSessionId else { return }
+        refetchHistory(for: id)
+    }
+
+    private func refetchHistory(for id: String) {
+        guard sessionsState[id] != nil, let client = destinationClient else { return }
+        let epoch = clientEpoch
+        let token = (refetchEpoch[id] ?? 0) &+ 1
+        refetchEpoch[id] = token
+        refetchTasks[id]?.cancel()
+        refetchTasks[id] = Task { [weak self] in
+            do {
+                for try await update in try client.sessionUpdates(id: id, policy: .networkOnly) {
+                    guard let self, !Task.isCancelled, self.clientEpoch == epoch,
+                          self.refetchEpoch[id] == token, self.sessionsState[id] != nil
+                    else { return }
+                    if case .snapshot(let snapshot) = update, snapshot.authoritative {
+                        var state = self.sessionsState[id] ?? SessionUIState()
+                        state = Self.reconciling(snapshot.session.history, into: state)
+                        state.loadState = snapshot.session.history.isEmpty ? .freshEmpty : .network
+                        self.sessionsState[id] = state
+                    }
+                }
+            } catch {
+                // Gap fills are best effort. Keep the transcript and lifecycle
+                // state; the next reconnect/refocus retries.
+            }
+        }
+    }
+
+    /// Target-owned deterministic tests inject wrapper events here without
+    /// weakening the production SDK surface.
+    func receiveForTesting(_ event: ClientEvent) { handleEvent(event) }
+
+    func installStateForTesting(id: String, state: SessionUIState, focused: Bool = true) {
+        sessionsState[id] = state
+        if focused { currentSessionId = id }
+    }
+
     private func updateMessage(in sid: String, key: String, message: Message) {
         guard var state = sessionsState[sid] else { return }
+        state = Self.applyingMessageUpdate(key: key, message: message, to: state)
+        sessionsState[sid] = state
+    }
+
+    static func applyingMessageUpdate(
+        key: String,
+        message: Message,
+        to state: SessionUIState
+    ) -> SessionUIState {
+        var state = state
         if let idx = state.messages.firstIndex(where: { messageKey($0) == key }) {
-            state.messages[idx] = message
+            let prior = state.messages[idx]
+            state.messages[idx] = Self.overlayingLocalHints(from: prior, onto: message)
+            state.liveMessageKeys.remove(messageKey(prior))
+            state.liveMessageKeys.insert(messageKey(state.messages[idx]))
         } else {
             // Defensive: an update can't find a prior add (e.g. race or
             // duplicate). Append so the row still appears.
             state.messages.append(message)
+            state.liveMessageKeys.insert(messageKey(message))
         }
-        sessionsState[sid] = state
+        return state
     }
 
     // Outbound rows show up first as `messageAdded` with `localId` set
     // and `id == ""`; the server `id` lands on `messageUpdated`. Prefer
     // `localId` so the same row tracks across the sending → delivered
     // transition. Inbound rows have no `localId`, so `id` wins.
-    private func messageKey(_ m: Message) -> String {
+    private static func messageKey(_ m: Message) -> String {
         if let local = m.localId, !local.isEmpty { return local }
         return m.id
+    }
+
+    static func reconciling(_ history: [Message], into state: SessionUIState) -> SessionUIState {
+        var updated = state
+        let localByServerId = Dictionary(
+            state.messages.lazy.filter { !$0.id.isEmpty }.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let serverIds = Set(history.lazy.map(\.id).filter { !$0.isEmpty })
+        var consumedLiveKeys = Set<String>()
+        let authoritative = history.map { remote -> Message in
+            guard let local = localByServerId[remote.id] else { return remote }
+            consumedLiveKeys.insert(local.localId?.isEmpty == false ? local.localId! : local.id)
+            return overlayingLocalHints(from: local, onto: remote)
+        }
+        let tail = state.messages.filter { local in
+            if !local.id.isEmpty && serverIds.contains(local.id) { return false }
+            let key = local.localId?.isEmpty == false ? local.localId! : local.id
+            return local.status == .sending || local.status == .failed || state.liveMessageKeys.contains(key)
+        }
+        updated.messages = authoritative + tail
+        updated.liveMessageKeys.subtract(consumedLiveKeys)
+        return updated
+    }
+
+    static func overlayingLocalHints(from local: Message, onto remote: Message) -> Message {
+        let localAttachments = Dictionary(
+            local.attachments.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let attachments = remote.attachments.map { item -> Attachment in
+            guard let preview = localAttachments[item.id]?.localUrl else { return item }
+            return Attachment(
+                id: item.id,
+                name: item.name,
+                contentType: item.contentType,
+                url: item.url,
+                localUrl: preview
+            )
+        }
+        return Message(
+            role: remote.role,
+            id: remote.id,
+            localId: remote.localId?.isEmpty == false ? remote.localId : local.localId,
+            text: remote.text,
+            html: remote.html,
+            timestamp: remote.timestamp,
+            userId: remote.userId,
+            userName: remote.userName,
+            action: remote.action,
+            attachments: attachments,
+            buttons: remote.buttons,
+            gallery: remote.gallery,
+            errorText: remote.errorText,
+            status: remote.status,
+            state: remote.state
+        )
     }
 
     // MARK: - Upload internals
@@ -522,14 +831,15 @@ final class ChatService: ObservableObject {
     /// and then sends normally — it must NOT start its own session, and it
     /// can't join by payload either, since the first message is already
     /// spoken for.
-    private func openAndSend(payload: SendMessagePayload) async throws -> String {
-        guard let client = sdk?.client else { throw OrigonError.notInitialized }
+    private func openAndSend(
+        payload: SendMessagePayload,
+        resuming resumeId: String?
+    ) async throws -> String {
+        guard let client = destinationClient else { throw OrigonError.notInitialized }
 
         if let inFlight = sessionStartTask {
             let id = try await inFlight.value
-            _ = try await Task.detached {
-                try client.sendMessage(id: id, payload: payload)
-            }.value
+            try await client.sendMessage(id: id, payload: payload)
             return id
         }
 
@@ -539,28 +849,36 @@ final class ChatService: ObservableObject {
                 // out, and a first message that fails to DELIVER does not
                 // throw — it arrives as `messageUpdated(.failed)` so the user
                 // can retry. Only a terminal refusal throws.
-                let response = try await Task.detached {
-                    try client.startChat(StartChatOptions(firstMessage: payload))
-                }.value
+                let response = try await client.startChat(StartChatOptions(
+                    firstMessage: payload,
+                    sessionId: resumeId
+                ))
                 await MainActor.run {
                     guard let self else { return }
-                    var state = self.sessionsState[response.sessionId] ?? SessionUIState()
+                    var state = resumeId.flatMap { self.sessionsState[$0] }
+                        ?? self.sessionsState[response.sessionId] ?? SessionUIState()
                     // Merge any draft tiles that were queued while the
                     // start was in flight. Sessions opened concurrently
                     // via `openSession` would already be in
                     // `sessionsState`; preserve their existing pending
                     // list and append the draft entries onto it.
                     state.pendingAttachments.append(contentsOf: self.draftPendingAttachments)
+                    state.connectionState = .connected
+                    state.accessGranted = true
+                    if let resumeId, resumeId != response.sessionId {
+                        self.sessionsState[resumeId] = nil
+                    }
                     self.sessionsState[response.sessionId] = state
                     self.draftPendingAttachments = []
                     // Only steal focus if the user didn't navigate to a
                     // different session while the start was in flight.
-                    if self.currentSessionId == nil {
+                    if self.currentSessionId == nil || self.currentSessionId == resumeId {
                         self.currentSessionId = response.sessionId
                     }
                     self.sessionStartTask = nil
                 }
                 try? await self?.sdk?.refreshSessions()
+                if resumeId != nil { await self?.refetchAfterResume(id: response.sessionId) }
                 return response.sessionId
             } catch {
                 // Clear the cached task on failure so the next caller
@@ -571,6 +889,10 @@ final class ChatService: ObservableObject {
         }
         sessionStartTask = task
         return try await task.value
+    }
+
+    private func refetchAfterResume(id: String) async {
+        refetchHistory(for: id)
     }
 
     private func runUpload(localId: String, data: Data, fileName: String) async {

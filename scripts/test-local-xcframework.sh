@@ -29,6 +29,10 @@ while IFS= read -r header; do
     echo "$header is missing session_client_open_chat" >&2
     exit 1
   }
+  grep -q 'session_client_send_dtmf' "$header" || {
+    echo "$header is missing session_client_send_dtmf" >&2
+    exit 1
+  }
 done < <(find "$artifact" -type f -name session_bridge.h -print)
 if (( header_count == 0 )); then
   echo "XCFramework has no session_bridge.h" >&2
@@ -43,6 +47,10 @@ while IFS= read -r library; do
     echo "$library is missing session_client_open_chat" >&2
     exit 1
   }
+  grep -Eq '^_?session_client_send_dtmf$' <<<"$symbols" || {
+    echo "$library is missing session_client_send_dtmf" >&2
+    exit 1
+  }
   for retired in session_client_get_sessions session_client_get_session \
     session_client_open_chat_with_intent; do
     ! grep -Eq "^_?${retired}$" <<<"$symbols" || {
@@ -54,6 +62,16 @@ done < <(find "$artifact" -type f -name libsession.a -print)
 if (( library_count == 0 )); then
   echo "XCFramework has no libsession.a slices" >&2
   exit 2
+fi
+
+wrapper="$repo_dir/Sources/OrigonSDK/OrigonClient.swift"
+grep -q 'public func sendDtmf(id: String, digit: Character)' "$wrapper" || {
+  echo "Swift wrapper is missing sendDtmf(id:digit:)" >&2
+  exit 1
+}
+if grep -Eq 'public (func|var) (receiveDtmf|onDtmf|dtmfReceived)' "$wrapper"; then
+  echo "Swift wrapper exposes an unsupported DTMF receive API" >&2
+  exit 1
 fi
 
 scratch="$(mktemp -d)"
@@ -80,12 +98,11 @@ perl -0pi -e '
    {isa = XCLocalSwiftPackageReference;\n\t\t\trelativePath = ../..;}s
 ' "$project"
 
+destination="${ORIGON_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 16}"
 xcodebuild \
   -project "$scratch/repo/examples/origon-sdk-example-ios/OrigonSDKExample.xcodeproj" \
   -scheme OrigonSDKExample \
-  -destination 'generic/platform=iOS Simulator' \
+  -destination "$destination" \
   -derivedDataPath "$scratch/DerivedData" \
   CODE_SIGNING_ALLOWED=NO \
-  ARCHS=arm64 \
-  ONLY_ACTIVE_ARCH=YES \
-  build
+  test

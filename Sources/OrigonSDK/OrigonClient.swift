@@ -670,6 +670,36 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Voice controls
 
+    /// Send one DTMF symbol to the active voice session's CX flow.
+    ///
+    /// `digit` must be one uppercase ASCII symbol from `0-9`, `*`, `#`, or
+    /// `A-D`. The SDK sends control data only; it does not synthesize audio,
+    /// tones, clicks, or haptics.
+    public func sendDtmf(id: String, digit: Character) throws {
+        let encoded = try Self.validateDtmfDigit(digit)
+        var err = SessionError()
+        let rc = try withHandle { handle in
+            id.withCString {
+                session_client_send_dtmf(handle, $0, encoded, &err)
+            }
+        }
+        if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    static func validateDtmfDigit(_ digit: Character) throws -> CChar {
+        guard
+            let ascii = digit.asciiValue,
+            "0123456789*#ABCD".utf8.contains(ascii)
+        else {
+            throw OrigonError(
+                kind: .other,
+                code: "invalid_dtmf_digit",
+                message: "DTMF digit must be one uppercase ASCII symbol"
+            )
+        }
+        return CChar(bitPattern: ascii)
+    }
+
     public func setMute(id: String, muted: Bool) throws {
         var err = SessionError()
         let rc = try withHandle { handle in
@@ -997,6 +1027,15 @@ public final class OrigonClient: @unchecked Sendable {
         return try? JSONDecoder().decode(Message.self, from: data)
     }
 
+    /// Decode the authoritative typing snapshot carried in the existing
+    /// `message_json` slot. Malformed payloads are dropped fail-closed.
+    private static func decodeTypingState(_ cstr: UnsafeMutablePointer<CChar>?) -> TypingState? {
+        guard let cstr else { return nil }
+        let json = String(cString: cstr)
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TypingState.self, from: data)
+    }
+
     /// Wire shape of the `chatSessionEnded` payload, which rides the FFI's
     /// `message_json` slot as `{reason, acw?}` (same field the message
     /// events use). `acw` is present only on an agent participant's stream.
@@ -1048,7 +1087,8 @@ public final class OrigonClient: @unchecked Sendable {
             return .controlUpdated(sessionId: sid, control: SessionControl.fromC(ev.control))
 
         case SESSION_EVENT_TYPING:
-            return .typing(sessionId: sid, isTyping: ev.typing != 0)
+            guard let state = Self.decodeTypingState(ev.message_json) else { return nil }
+            return .typing(sessionId: sid, state: state)
 
         case SESSION_EVENT_CONNECTED:
             return .connected(sessionId: sid)

@@ -18,6 +18,34 @@ registers the cross-repository contracts that must change and validate together.
   `/home/yl/workspace/apps/ios`, which registers its reciprocal in
   `CONTRACT.md`. This wrapper adds no alternate envelope or persistence.
 
+## Live-chat audience metadata
+
+- Version 0.3.1 mirrors apps/sdk's two-level optional boundary as
+  `Message.metadata: MessageMetadata?`,
+  `MessageMetadata.audience: MessageAudience?`, and optional
+  `SendMessagePayload.metadata`. Missing/null/empty values remain nil, explicit
+  lowercase `internal|all` values are preserved, and every other non-empty
+  value fails without trimming. Encoding omits nil while preserving an
+  explicitly supplied empty metadata object as `{}`.
+- Canonical wire production and validation are registered in
+  `/home/yl/workspace/platform/cx/CONTRACT.md` and
+  `/home/yl/workspace/apps/sdk/CONTRACT.md`. This wrapper only decodes the
+  already-authorized projection and never chooses or rewrites the audience.
+
+## Authoritative typing identity
+
+- Version 0.3.2 hardcuts public `.typing(sessionId:isTyping:)` to
+  `.typing(sessionId:state:)`, where `TypingState.participants` preserves the
+  native SDK's stable first-activation order and canonical participant, role,
+  optional user identity, and audience fields.
+- The C layout is unchanged: `SessionEvent.typing` remains the aggregate
+  compatibility bit while the authoritative snapshot uses the existing owned
+  `message_json` slot and is released by `session_event_clear`. The wrapper
+  decodes that JSON fail-closed and never persists or logs typing identity.
+- The shipped iOS app and this repository's example render the first active
+  participant with their existing one-avatar typing row and clear on empty or
+  terminal/local lifecycle events.
+
 ## Mobile chat continuity and push
 
 - `ClientConfig.installation_id` is supplied by this wrapper as a random,
@@ -92,6 +120,20 @@ registers the cross-repository contracts that must change and validate together.
   the named chat with takeover enabled.
   Provider invalid-token cleanup and the server's 90-day endpoint TTL are the
   uninstall cleanup path; uninstall cannot send an unregister call.
+
+## Voice DTMF ABI
+
+- The local XCFramework must expose the additive C producer
+  `session_client_send_dtmf(handle,id,char,out_err)` in every header and static
+  library slice before the Swift wrapper may expose it. Rust accepts exactly
+  one uppercase ASCII `0-9*#A-D` symbol and owns voice/session/reconnect
+  validation; errors never echo the symbol.
+- This lane is client-to-flow and send-only. The ABI adds no duration, inbound
+  callback, tone, haptic, or PCM synthesis. The high-level Swift API and its
+  consumer integration expose `OrigonClient.sendDtmf(id:digit:)` with a
+  `Character` argument and reject every value outside uppercase ASCII
+  `0-9*#A-D` before calling the ABI. Neither local validation nor native errors
+  echo the symbol, and a failed request is never retried by the wrapper.
 
 ## Release gate
 

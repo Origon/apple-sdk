@@ -33,6 +33,79 @@ public enum MessageState: String, Codable, Sendable {
     case completed
 }
 
+/// Closed delivery-audience vocabulary. The field holding it may be absent.
+public enum MessageAudience: String, Codable, Sendable {
+    /// Visible only to attached internal agents and supervisors.
+    case internalParticipants = "internal"
+    /// Visible to internal participants and the external visitor.
+    case all
+}
+
+/// Server-stamped identity for one active remote typer. This value is
+/// ephemeral; consumers must not persist or log it.
+public struct TypingParticipant: Codable, Sendable, Equatable {
+    public let participantId: String
+    public let role: MessageRole
+    public let userId: String?
+    public let userName: String?
+    public let audience: MessageAudience
+
+    public init(
+        participantId: String,
+        role: MessageRole,
+        userId: String? = nil,
+        userName: String? = nil,
+        audience: MessageAudience
+    ) {
+        self.participantId = participantId
+        self.role = role
+        self.userId = userId
+        self.userName = userName
+        self.audience = audience
+    }
+}
+
+/// Stable first-activation-ordered snapshot of active remote typers.
+public struct TypingState: Codable, Sendable, Equatable {
+    public let participants: [TypingParticipant]
+
+    public init(participants: [TypingParticipant] = []) {
+        self.participants = participants
+    }
+}
+
+/// Optional message metadata. Unknown non-empty audiences fail decoding.
+public struct MessageMetadata: Codable, Sendable, Equatable {
+    public let audience: MessageAudience?
+
+    public init(audience: MessageAudience? = nil) {
+        self.audience = audience
+    }
+
+    private enum CodingKeys: String, CodingKey { case audience }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let raw = try c.decodeIfPresent(String.self, forKey: .audience), !raw.isEmpty else {
+            self.audience = nil
+            return
+        }
+        guard let audience = MessageAudience(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .audience,
+                in: c,
+                debugDescription: "Unknown message audience: \(raw)"
+            )
+        }
+        self.audience = audience
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(audience, forKey: .audience)
+    }
+}
+
 /// Audio output route override for a voice call — the "speakerphone" concept,
 /// distinct from device selection. On iOS this maps onto
 /// `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
@@ -463,6 +536,8 @@ public struct Message: Codable, Sendable, Equatable {
     public let errorText: String?
     public let status: MessageStatus
     public let state: MessageState
+    /// Optional server/client delivery classification.
+    public let metadata: MessageMetadata?
 
     public init(
         role: MessageRole = .external,
@@ -479,7 +554,8 @@ public struct Message: Codable, Sendable, Equatable {
         gallery: [MessageCard] = [],
         errorText: String? = nil,
         status: MessageStatus = .delivered,
-        state: MessageState = .completed
+        state: MessageState = .completed,
+        metadata: MessageMetadata? = nil
     ) {
         self.role = role
         self.id = id
@@ -496,6 +572,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = errorText
         self.status = status
         self.state = state
+        self.metadata = metadata
     }
 
     public init(from decoder: Decoder) throws {
@@ -515,6 +592,7 @@ public struct Message: Codable, Sendable, Equatable {
         self.errorText = try c.decodeIfPresent(String.self, forKey: .errorText)
         self.status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .delivered
         self.state = try c.decodeIfPresent(MessageState.self, forKey: .state) ?? .completed
+        self.metadata = try c.decodeIfPresent(MessageMetadata.self, forKey: .metadata)
     }
 }
 
@@ -535,6 +613,8 @@ public struct SendMessagePayload: Codable, Sendable {
     /// which is what disambiguates two cards sharing a button value. Leave
     /// nil for a plain button reply.
     public let galleryLabel: String?
+    /// Optional participant/monitor audience metadata.
+    public let metadata: MessageMetadata?
 
     /// Both prompt keys are `Optional`, so Swift's synthesised encoder
     /// omits them when nil — an ordinary message carries neither key.
@@ -543,13 +623,15 @@ public struct SendMessagePayload: Codable, Sendable {
         html: String? = nil,
         attachments: [Attachment] = [],
         value: String? = nil,
-        galleryLabel: String? = nil
+        galleryLabel: String? = nil,
+        metadata: MessageMetadata? = nil
     ) {
         self.text = text
         self.html = html
         self.attachments = attachments
         self.value = value
         self.galleryLabel = galleryLabel
+        self.metadata = metadata
     }
 }
 
@@ -749,7 +831,7 @@ public enum ClientEvent: Sendable {
     case messageUpdated(sessionId: String, id: String, message: Message)
     case sessionUpdated(sessionId: String, newSessionId: String)
     case controlUpdated(sessionId: String, control: SessionControl)
-    case typing(sessionId: String, isTyping: Bool)
+    case typing(sessionId: String, state: TypingState)
     case connected(sessionId: String)
     case reconnecting(sessionId: String, attempt: UInt32, reason: DisconnectReason)
     case reconnected(sessionId: String)

@@ -3,6 +3,40 @@ import PhotosUI
 import UniformTypeIdentifiers
 import OrigonSDK
 
+private struct ExampleTranscriptFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct ExampleTranscriptSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+struct ExampleComposerPresentation: Equatable {
+    enum Primary: Equatable { case send, startCall }
+    let primary: Primary
+    let label: String
+    let hint: String
+    let disabled: Bool
+}
+
+func exampleComposerPresentation(
+    hasContent: Bool, voiceActionAvailable: Bool, transportBlocked: Bool, sending: Bool
+) -> ExampleComposerPresentation {
+    let primary: ExampleComposerPresentation.Primary =
+        !hasContent && voiceActionAvailable ? .startCall : .send
+    return .init(
+        primary: primary,
+        label: primary == .startCall ? "Start a call" : "Send message",
+        hint: transportBlocked ? "Unavailable while the conversation reconnects or is read-only" :
+            (primary == .startCall ? "Starts a voice session" : "Sends the message and attachments"),
+        disabled: sending || transportBlocked || (!hasContent && primary == .send)
+    )
+}
+
 struct ChatView: View {
     @Binding var sessionId: String?
     let onMenuTap: () -> Void
@@ -10,6 +44,7 @@ struct ChatView: View {
     let onStartCall: () -> Void
 
     @EnvironmentObject var sdk: SDKManager
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var inputText = ""
     @State private var hasStartedSession = false
@@ -22,6 +57,15 @@ struct ChatView: View {
     @State private var isSending = false
     @State private var toastMessage: String?
     @State private var showToast = false
+    @State private var checkpointLoaded = false
+    @State private var checkpointLastSeenMessageId: String?
+    @State private var unreadAnchorMessageId: String?
+    @State private var positionedForVisit = false
+    @State private var visibleRowIds: [String] = []
+    @State private var latestRowVisible = false
+    @State private var transcriptSize: CGSize = .zero
+    @State private var sendFollowIntent: ExampleTranscriptFollowIntent?
+    @State private var lastCheckpointCandidate: String?
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -32,7 +76,17 @@ struct ChatView: View {
                 } else {
                     messagesArea
                 }
-                inputBar
+                if sdk.endpointPolicy.showsComposer {
+                    inputBar
+                } else if sdk.endpointPolicy.showsVoiceOnlyAction {
+                    PrimaryButton(title: "Start a call", action: onStartCall)
+                        .padding(16)
+                } else {
+                    Text("Messaging and calls are disabled for this endpoint.")
+                        .font(.footnote)
+                        .foregroundColor(Origon.textSecondary)
+                        .padding(16)
+                }
             }
 
             if showToast, let message = toastMessage {
@@ -87,9 +141,15 @@ struct ChatView: View {
         .onAppear {
             focusSessionIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            sdk.chat.refetchFocusedSession()
+        }
         .onChange(of: sessionId) { _ in
             hasStartedSession = false
             hasFocusedOnce = false
+            resetTranscriptVisit()
             focusSessionIfNeeded()
         }
         .onChange(of: sdk.chat.currentSessionId) { _ in
@@ -99,16 +159,28 @@ struct ChatView: View {
                 isInputFocused = true
             }
         }
+        .task(id: checkpointTaskId) {
+            await loadCheckpointForVisit()
+        }
         .onChange(of: sdk.chat.error) { newValue in
             guard let message = newValue, !message.isEmpty else { return }
             presentToast(message)
             sdk.chat.error = nil
         }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active, latestRowVisible,
+                  let id = resolvedCheckpointSessionId else { return }
+            Task {
+                await sdk.markCheckpointSeen(
+                    sessionId: id, latestRowVisible: true, sceneForeground: true
+                )
+            }
+        }
         .photosPicker(
             isPresented: $showPhotoPicker,
             selection: $photoSelections,
             maxSelectionCount: nil,
-            matching: .any(of: [.images, .videos])
+            matching: photoPickerFilter
         )
         .onChange(of: photoSelections) { items in
             guard !items.isEmpty else { return }
@@ -143,7 +215,7 @@ struct ChatView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 56, height: 56)
-            Text("How can I help you?")
+            Text(sdk.endpointPolicy.greeting)
                 .font(.title2.weight(.medium))
                 .foregroundColor(Origon.textPrimary)
                 .multilineTextAlignment(.center)
@@ -160,21 +232,27 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(Array(sdk.chat.messages.enumerated()), id: \.offset) { index, message in
+                    ForEach(transcriptRows) { row in
+                        if row.message.id == unreadAnchorMessageId {
+                            newMessagesDivider
+                        }
                         MessageBubble(
-                            message: message,
+                            message: row.message,
                             selectedIndex: $selectedMessageIndex,
-                            index: index,
-                            promptIsLive: sdk.chat.promptIsLive(
-                                message, in: sdk.chat.currentSessionId
+                            index: row.index,
+                            showsAuthor: exampleShouldShowAuthor(
+                                row.message,
+                                previous: row.index > 0 ? sdk.chat.messages[row.index - 1] : nil
                             ),
+                            promptIsLive: sdk.endpointPolicy.promptSendEnabled &&
+                                sdk.chat.promptIsLive(row.message, in: sdk.chat.currentSessionId),
                             promptSelection: sdk.chat.selection(
-                                for: message.id, in: sdk.chat.currentSessionId
+                                for: row.message.id, in: sdk.chat.currentSessionId
                             ),
                             onPromptReply: { cardIndex, label, value, galleryLabel in
                                 Task {
                                     await sdk.chat.sendButtonReply(
-                                        promptId: message.id,
+                                        promptId: row.message.id,
                                         cardIndex: cardIndex,
                                         label: label,
                                         value: value,
@@ -183,7 +261,15 @@ struct ChatView: View {
                                 }
                             }
                         )
-                            .id(index)
+                            .id(row.id)
+                            .background(
+                                GeometryReader { geometry in
+                                    Color.clear.preference(
+                                        key: ExampleTranscriptFramesKey.self,
+                                        value: [row.id: geometry.frame(in: .named("example-transcript"))]
+                                    )
+                                }
+                            )
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom).combined(with: .opacity),
                                 removal: .opacity
@@ -191,7 +277,7 @@ struct ChatView: View {
                     }
 
                     if sdk.chat.isTyping {
-                        TypingIndicator()
+                        TypingIndicator(author: exampleTypingAuthor(sdk.chat.typingParticipant))
                             .id("typing")
                             .transition(.opacity)
                     }
@@ -199,19 +285,69 @@ struct ChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .onChange(of: sdk.chat.messages.count) { _ in
-                withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy: proxy) }
+            .coordinateSpace(name: "example-transcript")
+            .background(
+                GeometryReader { geometry in
+                    Color.clear.preference(key: ExampleTranscriptSizeKey.self, value: geometry.size)
+                }
+            )
+            .onPreferenceChange(ExampleTranscriptFramesKey.self) { frames in
+                updateVisibleRows(frames)
+            }
+            .onPreferenceChange(ExampleTranscriptSizeKey.self) { size in
+                guard size != .zero, size != transcriptSize else { return }
+                let target = exampleViewportRestoreTarget(
+                    visibleRowIds: visibleRowIds,
+                    atTail: latestRowVisible,
+                    tailId: transcriptRows.last?.id
+                )
+                transcriptSize = size
+                guard positionedForVisit, let target else { return }
+                DispatchQueue.main.async { proxy.scrollTo(target, anchor: latestRowVisible ? .bottom : .top) }
+            }
+            .onChange(of: messagePresentationToken) { _ in
+                let decision = exampleTranscriptChangeDecision(
+                    intent: sendFollowIntent,
+                    outgoingLocalIds: outgoingLocalIds,
+                    positioned: positionedForVisit,
+                    wasAtTail: latestRowVisible
+                )
+                if decision.consumeIntent { sendFollowIntent = nil }
+                if decision.followTail {
+                    withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy: proxy) }
+                } else if let anchor = visibleRowIds.first {
+                    proxy.scrollTo(anchor, anchor: .top)
+                }
+                positionTranscriptIfReady(proxy: proxy)
             }
             .onChange(of: sdk.chat.isTyping) { _ in
+                guard latestRowVisible else { return }
                 withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy: proxy) }
+            }
+            .onChange(of: sdk.chat.focusedLoadState) { _ in
+                positionTranscriptIfReady(proxy: proxy)
             }
             .onAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    scrollToBottom(proxy: proxy)
+                    positionTranscriptIfReady(proxy: proxy)
                 }
             }
         }
         .onTapGesture { isInputFocused = false }
+    }
+
+    private var newMessagesDivider: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(Origon.border).frame(height: 1)
+            Text("NEW MESSAGES")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(Origon.textSecondary)
+            Rectangle().fill(Origon.border).frame(height: 1)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(exampleNewMessagesAccessibilityLabel)
+        .accessibilitySortPriority(1)
     }
 
     private var hasText: Bool {
@@ -222,17 +358,54 @@ struct ChatView: View {
         hasText || !sdk.chat.pendingAttachments.isEmpty
     }
 
+    private var composerBlocked: Bool {
+        sdk.chat.currentSessionId != nil && !sdk.chat.canSendFocusedSession
+    }
+
+    private var primaryIsVoice: Bool {
+        !hasContent && sdk.endpointPolicy.showsComposerVoiceAction
+    }
+
+    private var composerPresentation: ExampleComposerPresentation {
+        exampleComposerPresentation(
+            hasContent: hasContent,
+            voiceActionAvailable: sdk.endpointPolicy.showsComposerVoiceAction,
+            transportBlocked: composerBlocked,
+            sending: isSending
+        )
+    }
+
+    private var photoPickerFilter: PHPickerFilter {
+        let policy = sdk.endpointPolicy.attachments
+        switch (policy.images, policy.videos) {
+        case (true, true):
+            return PHPickerFilter.any(of: [PHPickerFilter.images, PHPickerFilter.videos])
+        case (true, false): return PHPickerFilter.images
+        case (false, true): return PHPickerFilter.videos
+        case (false, false): return PHPickerFilter.images
+        }
+    }
+
     // MARK: - Input bar
 
     private var inputBar: some View {
         VStack(spacing: 0) {
+            if let status = connectionStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundColor(Origon.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .accessibilityLabel(status)
+            }
             if !sdk.chat.pendingAttachments.isEmpty {
                 attachmentsPreviewRow
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                attachButton
+                if sdk.chat.attachmentsAllowed { attachButton }
 
                 TextField("Message", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -240,6 +413,11 @@ struct ChatView: View {
                     .lineLimit(1...5)
                     .focused($isInputFocused)
                     .padding(.vertical, 8)
+                    .frame(minHeight: 44)
+                    .disabled(composerBlocked)
+                    .accessibilityLabel("Message")
+                    .accessibilityHint(composerBlocked ? "Message entry unavailable" : "Enter a message")
+                    .accessibilitySortPriority(2)
                     .onChange(of: inputText) { newValue in
                         if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             sdk.chat.stopTyping()
@@ -267,24 +445,40 @@ struct ChatView: View {
         .padding(.vertical, 16)
     }
 
+    private var connectionStatus: String? {
+        guard sdk.chat.currentSessionId != nil else { return nil }
+        switch sdk.chat.currentConnectionState {
+        case .connected:
+            return sdk.chat.canSendFocusedSession ? nil : "Opening conversation…"
+        case .reconnecting: return "Reconnecting…"
+        case .dropped: return "Connection lost. Your next message will retry."
+        case .ended: return "Conversation ended. This transcript is read-only."
+        }
+    }
+
     private var attachButton: some View {
         Menu {
-            Button {
-                showPhotoPicker = true
-            } label: {
-                Label("Photo Library", systemImage: "photo.on.rectangle")
+            if sdk.endpointPolicy.attachments.images || sdk.endpointPolicy.attachments.videos {
+                Button {
+                    showPhotoPicker = true
+                } label: {
+                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                }
             }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            if sdk.endpointPolicy.attachments.images &&
+                UIImagePickerController.isSourceTypeAvailable(.camera) {
                 Button {
                     showCamera = true
                 } label: {
                     Label("Camera", systemImage: "camera")
                 }
             }
-            Button {
-                showFilePicker = true
-            } label: {
-                Label("Files", systemImage: "folder")
+            if sdk.endpointPolicy.attachments.documents || sdk.endpointPolicy.attachments.audio {
+                Button {
+                    showFilePicker = true
+                } label: {
+                    Label("Files", systemImage: "folder")
+                }
             }
         } label: {
             Image("AttachmentIcon")
@@ -294,20 +488,26 @@ struct ChatView: View {
                 .frame(width: 22, height: 22)
                 .foregroundColor(Origon.textSecondary)
                 .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
         }
         .padding(.leading, 2)
         .padding(.bottom, 3)
-        .disabled(isSending)
+        .disabled(isSending || composerBlocked)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel("Add attachment")
+        .accessibilityHint("Choose a permitted photo, video, document, or audio file")
+        .accessibilitySortPriority(3)
         .simultaneousGesture(TapGesture().onEnded { isInputFocused = false })
     }
 
     private var sendOrWaveButton: some View {
         Button {
-            if hasContent {
-                sendMessage()
-            } else {
+            Haptics.light()
+            if primaryIsVoice {
                 isInputFocused = false
                 onStartCall()
+            } else {
+                sendMessage()
             }
         } label: {
             ZStack {
@@ -323,17 +523,22 @@ struct ChatView: View {
                     Circle()
                         .fill(Origon.accent)
                         .frame(width: 32, height: 32)
-                    Image(hasContent ? "SendIcon" : "VoiceIcon")
+                    Image(primaryIsVoice ? "VoiceIcon" : "SendIcon")
                         .renderingMode(.template)
                         .resizable()
                         .frame(width: 20, height: 20)
                         .foregroundColor(Origon.accentForeground)
-                        .id(hasContent)
+                        .id(primaryIsVoice)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
         }
-        .disabled(isSending)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .disabled(composerPresentation.disabled)
+        .accessibilityLabel(composerPresentation.label)
+        .accessibilityHint(composerPresentation.hint)
+        .accessibilitySortPriority(1)
     }
 
     private var attachmentsPreviewRow: some View {
@@ -365,6 +570,7 @@ struct ChatView: View {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !sdk.chat.pendingAttachments.isEmpty else { return }
 
+        sendFollowIntent = .explicitSend(previousOutgoingLocalIds: outgoingLocalIds)
         Task {
             if sdk.chat.hasUploadingAttachments {
                 await MainActor.run { isSending = true }
@@ -373,6 +579,97 @@ struct ChatView: View {
             }
             await MainActor.run { inputText = "" }
             await sdk.chat.sendMessage(text: text)
+        }
+    }
+
+    private var resolvedCheckpointSessionId: String? {
+        sessionId ?? sdk.chat.currentSessionId
+    }
+
+    private var checkpointTaskId: String {
+        "\(sdk.checkpointEndpoint ?? "")\u{0}\(resolvedCheckpointSessionId ?? "")"
+    }
+
+    private var transcriptRows: [ExampleTranscriptRow] {
+        sdk.chat.messages.enumerated().map { .init(index: $0.offset, message: $0.element) }
+    }
+
+    private var outgoingLocalIds: Set<String> {
+        Set(sdk.chat.messages.compactMap { message in
+            guard message.role == .external else { return nil }
+            return message.localId?.isEmpty == false ? message.localId : nil
+        })
+    }
+
+    private var messagePresentationToken: String {
+        sdk.chat.messages.enumerated().map {
+            "\(exampleTranscriptRowId($0.element, index: $0.offset)):\($0.element.id):\($0.element.action ?? ""):\($0.element.status)"
+        }.joined(separator: "|")
+    }
+
+    private func resetTranscriptVisit() {
+        checkpointLoaded = false
+        checkpointLastSeenMessageId = nil
+        unreadAnchorMessageId = nil
+        positionedForVisit = false
+        visibleRowIds = []
+        latestRowVisible = false
+        sendFollowIntent = nil
+        lastCheckpointCandidate = nil
+    }
+
+    private func loadCheckpointForVisit() async {
+        guard let id = resolvedCheckpointSessionId, !id.isEmpty else {
+            checkpointLoaded = true
+            return
+        }
+        let expected = checkpointTaskId
+        let checkpoint = await sdk.checkpoint(sessionId: id)
+        guard expected == checkpointTaskId else { return }
+        checkpointLastSeenMessageId = checkpoint?.lastSeenMessageId
+        unreadAnchorMessageId = exampleUnreadAnchorMessageId(
+            messages: sdk.chat.messages,
+            checkpointId: checkpointLastSeenMessageId
+        )
+        checkpointLoaded = true
+    }
+
+    private func positionTranscriptIfReady(proxy: ScrollViewProxy) {
+        guard checkpointLoaded, sdk.chat.focusedHistoryIsAuthoritative,
+              !positionedForVisit else { return }
+        unreadAnchorMessageId = exampleUnreadAnchorMessageId(
+            messages: sdk.chat.messages,
+            checkpointId: checkpointLastSeenMessageId
+        )
+        let target = unreadAnchorMessageId.flatMap { anchor in
+            transcriptRows.first(where: { $0.message.id == anchor })?.id
+        } ?? transcriptRows.last?.id
+        positionedForVisit = true
+        guard let target else { return }
+        proxy.scrollTo(target, anchor: unreadAnchorMessageId == nil ? .bottom : .top)
+    }
+
+    private func updateVisibleRows(_ frames: [String: CGRect]) {
+        guard transcriptSize.height > 0 else { return }
+        let visible = transcriptRows.compactMap { row -> String? in
+            guard let frame = frames[row.id], frame.maxY > 0,
+                  frame.minY < transcriptSize.height else { return nil }
+            return row.id
+        }
+        visibleRowIds = visible
+        let tailVisible = transcriptRows.last.map { visible.contains($0.id) } ?? false
+        latestRowVisible = tailVisible
+        guard tailVisible, sdk.chat.focusedHistoryIsAuthoritative,
+              let id = resolvedCheckpointSessionId,
+              let candidate = exampleNewestEligibleMessageId(sdk.chat.messages),
+              candidate != lastCheckpointCandidate else { return }
+        lastCheckpointCandidate = candidate
+        Task {
+            await sdk.markCheckpointSeen(
+                sessionId: id,
+                latestRowVisible: true,
+                sceneForeground: scenePhase == .active
+            )
         }
     }
 

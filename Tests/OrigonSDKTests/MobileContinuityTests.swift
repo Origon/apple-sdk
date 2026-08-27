@@ -3,6 +3,29 @@ import XCTest
 @testable import OrigonSDK
 
 final class MobileContinuityTests: XCTestCase {
+    func testDtmfValidationAcceptsExactlyThePublicAlphabet() throws {
+        for digit in "0123456789*#ABCD" {
+            XCTAssertEqual(
+                UInt8(bitPattern: try OrigonClient.validateDtmfDigit(digit)),
+                digit.asciiValue
+            )
+        }
+    }
+
+    func testDtmfValidationRejectsLowercaseAndNonAsciiWithoutEchoingInput() {
+        for digit: Character in ["a", "d", "é", "１", "1\u{FE0F}"] {
+            XCTAssertThrowsError(try OrigonClient.validateDtmfDigit(digit)) { error in
+                let typed = error as? OrigonError
+                XCTAssertEqual(typed?.kind, .other)
+                XCTAssertEqual(typed?.code, "invalid_dtmf_digit")
+                XCTAssertEqual(
+                    typed?.description,
+                    "DTMF digit must be one uppercase ASCII symbol"
+                )
+            }
+        }
+    }
+
     func testNativeHandleGateAllowsConcurrentCallsAndCloseWaitsForEveryLease() throws {
         let handle = try XCTUnwrap(OpaquePointer(bitPattern: 1))
         let gate = NativeHandleGate(handle)
@@ -122,6 +145,61 @@ final class MobileContinuityTests: XCTestCase {
 
         let legacy = #"{"sessionId":"s","subject":"x","channel":"chat","createdAt":"c","updatedAt":"u"}"#
         XCTAssertThrowsError(try JSONDecoder().decode(SessionSummary.self, from: Data(legacy.utf8)))
+    }
+
+    func testMessageAndSendPayloadPreserveOptionalAudienceMetadata() throws {
+        let internalRow = #"{"id":"m1","metadata":{"audience":"internal"}}"#
+        let decoded = try JSONDecoder().decode(Message.self, from: Data(internalRow.utf8))
+        XCTAssertEqual(decoded.metadata?.audience, .internalParticipants)
+        let allRow = #"{"id":"m1a","metadata":{"audience":"all"}}"#
+        XCTAssertEqual(
+            try JSONDecoder().decode(Message.self, from: Data(allRow.utf8)).metadata?.audience,
+            .all
+        )
+
+        for row in [#"{"id":"m2"}"#, #"{"id":"m2","metadata":null}"#] {
+            XCTAssertNil(try JSONDecoder().decode(Message.self, from: Data(row.utf8)).metadata)
+        }
+
+        for row in [
+            #"{"id":"m3","metadata":{}}"#,
+            #"{"id":"m3","metadata":{"audience":null}}"#,
+            #"{"id":"m3","metadata":{"audience":""}}"#,
+        ] {
+            let message = try JSONDecoder().decode(Message.self, from: Data(row.utf8))
+            XCTAssertNotNil(message.metadata)
+            XCTAssertNil(message.metadata?.audience)
+        }
+
+        XCTAssertNil(Message(id: "local").metadata)
+
+        let unknown = #"{"id":"m4","metadata":{"audience":"staff"}}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Message.self, from: Data(unknown.utf8)))
+        let whitespace = #"{"id":"m5","metadata":{"audience":" "}}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Message.self, from: Data(whitespace.utf8)))
+
+        let encoder = JSONEncoder()
+        let omitted = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encoder.encode(SendMessagePayload(text: "hello"))
+        ) as? [String: Any])
+        XCTAssertNil(omitted["metadata"])
+
+        let empty = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encoder.encode(SendMessagePayload(metadata: MessageMetadata()))
+        ) as? [String: Any])
+        XCTAssertEqual((empty["metadata"] as? [String: Any])?.count, 0)
+
+        let explicit = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: encoder.encode(SendMessagePayload(metadata: MessageMetadata(audience: .all)))
+        ) as? [String: Any])
+        XCTAssertEqual((explicit["metadata"] as? [String: Any])?["audience"] as? String, "all")
+    }
+
+    func testSessionSummaryLastMessageAcceptsLegacyMissingMetadata() throws {
+        let row = #"{"sessionId":"s","subject":"Support","channel":"chat","active":false,"createdAt":"c","updatedAt":"u","lastMessage":{"id":"m","role":"external","attachments":[],"status":"delivered","state":"completed"}}"#
+        let summary = try JSONDecoder().decode(SessionSummary.self, from: Data(row.utf8))
+        XCTAssertNotNil(summary.lastMessage)
+        XCTAssertNil(summary.lastMessage?.metadata)
     }
 
     func testNotificationGenerationMustMatchExactly() throws {

@@ -5,6 +5,7 @@ struct MessageBubble: View {
     let message: Message
     @Binding var selectedIndex: Int?
     let index: Int
+    let showsAuthor: Bool
     /// Interactive-prompt wiring. Defaulted so the call sites that render
     /// plain transcript rows stay unchanged; only the live chat transcript
     /// passes these.
@@ -18,6 +19,8 @@ struct MessageBubble: View {
     private var isSelfUser: Bool {
         message.role == .external
     }
+
+    private var authorName: String { exampleMessageAuthor(message).displayName }
 
     private var showTimestamp: Bool {
         selectedIndex == index && message.timestamp != nil
@@ -78,8 +81,18 @@ struct MessageBubble: View {
             if isSelfUser { Spacer(minLength: 60) }
 
             VStack(alignment: isSelfUser ? .trailing : .leading, spacing: 6) {
-                if let text = message.text, !text.isEmpty {
-                    Text(text)
+                if showsAuthor {
+                    Text(authorName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(Origon.textSecondary)
+                        .accessibilityLabel("Message from \(authorName)")
+                }
+                if message.text?.isEmpty == false || message.html?.isEmpty == false {
+                    ExampleRichMessageBody(
+                        html: message.html,
+                        text: message.text,
+                        color: isSelfUser ? Origon.accentForeground : Origon.textPrimary
+                    )
                         .font(.body)
                         .foregroundColor(isSelfUser ? Origon.accentForeground : Origon.textPrimary)
                         .padding(.horizontal, 14)
@@ -182,8 +195,7 @@ struct MessageBubble: View {
         galleryLabel: String?,
         button: MessageButton
     ) {
-        if button.buttonType == "url",
-           let url = URL(string: button.value),
+        if let url = examplePromptURL(buttonType: button.buttonType, value: button.value),
            UIApplication.shared.canOpenURL(url)
         {
             UIApplication.shared.open(url)
@@ -206,6 +218,52 @@ struct MessageBubble: View {
         timeFormatter.dateFormat = "h:mm a"
         return timeFormatter.string(from: date)
     }
+}
+
+func examplePromptURL(buttonType: String?, value: String) -> URL? {
+    guard buttonType == "url" else { return nil }
+    return ExampleRichText.safeURL(value)
+}
+
+struct ExampleMessageAuthor: Equatable {
+    let key: String
+    let displayName: String
+}
+
+func exampleMessageAuthor(_ message: Message) -> ExampleMessageAuthor {
+    let name = message.userName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let userID = message.userId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch message.role {
+    case .external:
+        return .init(key: "self", displayName: name?.isEmpty == false ? name! : "You")
+    case .user:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? "agent")
+        return .init(key: "agent:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Agent")
+    case .ai, .system:
+        return .init(key: "assistant", displayName: "Assistant")
+    }
+}
+
+func exampleTypingAuthor(_ participant: TypingParticipant?) -> ExampleMessageAuthor {
+    guard let participant else { return .init(key: "assistant", displayName: "Assistant") }
+    let name = participant.userName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let userID = participant.userId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch participant.role {
+    case .ai, .system:
+        return .init(key: "assistant", displayName: "Assistant")
+    case .external:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? participant.participantId)
+        return .init(key: "external:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Visitor")
+    case .user:
+        let identity = userID?.isEmpty == false ? userID! : (name ?? participant.participantId)
+        return .init(key: "agent:\(identity.lowercased())", displayName: name?.isEmpty == false ? name! : "Agent")
+    }
+}
+
+func exampleShouldShowAuthor(_ message: Message, previous: Message?) -> Bool {
+    guard message.action?.isEmpty != false else { return false }
+    guard let previous, previous.action?.isEmpty != false else { return true }
+    return exampleMessageAuthor(message).key != exampleMessageAuthor(previous).key
 }
 
 // MARK: - Attachment row

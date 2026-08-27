@@ -49,7 +49,7 @@ struct MessageGallery: View {
             // `image` is legitimately nil — the server emits null for a card
             // authored without one. Unwrapping it unconditionally would crash
             // the whole carousel, not just this card.
-            if let url = card.image?.url, !url.isEmpty, let parsed = URL(string: url) {
+            if let parsed = exampleGalleryImageURL(card) {
                 // No auth header: the server mints a public capability URL for
                 // gallery images, and its GET is deliberately tokenless.
                 AsyncImage(url: parsed) { phase in
@@ -137,6 +137,11 @@ struct MessageGallery: View {
             }
         }
     }
+}
+
+func exampleGalleryImageURL(_ card: MessageCard) -> URL? {
+    guard let raw = card.image?.url, !raw.isEmpty else { return nil }
+    return ExampleRichText.safeURL(raw)
 }
 
 /// A gallery card's action row: full-bleed, separated by a hairline rather

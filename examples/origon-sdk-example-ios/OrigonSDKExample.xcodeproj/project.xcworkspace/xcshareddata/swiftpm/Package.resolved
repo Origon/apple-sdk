@@ -1,0 +1,23 @@
+{
+  "pins" : [
+    {
+      "identity" : "apple-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Origon/apple-sdk",
+      "state" : {
+        "revision" : "76f158d174a38094a20aeb475627b51691fce88d",
+        "version" : "0.3.2"
+      }
+    },
+    {
+      "identity" : "swiftsoup",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scinfu/SwiftSoup",
+      "state" : {
+        "revision" : "8d6ad267714cac3ae747cefdd21f7a6665006e1f",
+        "version" : "2.13.7"
+      }
+    }
+  ],
+  "version" : 2
+}

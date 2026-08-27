@@ -2,6 +2,121 @@ import Foundation
 import Combine
 import OrigonSDK
 
+enum ExampleAttachmentCategory: CaseIterable {
+    case images, documents, videos, audio
+
+    init(contentType: String) {
+        if contentType.hasPrefix("image/") { self = .images }
+        else if contentType.hasPrefix("video/") { self = .videos }
+        else if contentType.hasPrefix("audio/") { self = .audio }
+        else { self = .documents }
+    }
+}
+
+struct ExampleAttachmentPolicy: Equatable {
+    var images = false
+    var documents = false
+    var videos = false
+    var audio = false
+
+    init() {}
+
+    init(_ policy: AttachmentPolicy) {
+        images = policy.images.enabled
+        documents = policy.documents.enabled
+        videos = policy.videos.enabled
+        audio = policy.audio.enabled
+    }
+
+    func allows(_ category: ExampleAttachmentCategory) -> Bool {
+        switch category {
+        case .images: images
+        case .documents: documents
+        case .videos: videos
+        case .audio: audio
+        }
+    }
+}
+
+/// Immutable app-owned copy of the SDK's cached endpoint configuration.
+/// A copy is installed only with its initialized client, so an endpoint switch
+/// cannot leak the previous tenant's greeting or channel/picker policy.
+struct ExampleServerConfig: Equatable {
+    let startMessage: String
+    let multipleChannels: Bool
+    let chatEnabled: Bool
+    let callEnabled: Bool
+    let attachments: ExampleAttachmentPolicy
+
+    init(
+        startMessage: String,
+        multipleChannels: Bool,
+        chatEnabled: Bool,
+        callEnabled: Bool,
+        attachments: ExampleAttachmentPolicy = .init()
+    ) {
+        self.startMessage = startMessage
+        self.multipleChannels = multipleChannels
+        self.chatEnabled = chatEnabled
+        self.callEnabled = callEnabled
+        self.attachments = attachments
+    }
+
+    init(_ config: ServerConfig) {
+        self.init(
+            startMessage: config.startMessage,
+            multipleChannels: config.multipleChannels,
+            chatEnabled: config.isChatEnabled,
+            callEnabled: config.isCallEnabled,
+            attachments: ExampleAttachmentPolicy(config.attachmentPolicy)
+        )
+    }
+}
+
+struct ExampleEndpointPolicy: Equatable {
+    let greeting: String
+    let showsComposer: Bool
+    let showsVoiceOnlyAction: Bool
+    let showsComposerVoiceAction: Bool
+    let promptSendEnabled: Bool
+    let attachments: ExampleAttachmentPolicy
+
+    init(config: ExampleServerConfig?) {
+        let config = config ?? ExampleServerConfig(
+            startMessage: "", multipleChannels: false,
+            chatEnabled: false, callEnabled: false
+        )
+        greeting = config.startMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty ?? "How can I help you?"
+        showsComposer = config.chatEnabled
+        showsVoiceOnlyAction = config.callEnabled && !config.chatEnabled
+        showsComposerVoiceAction = config.chatEnabled && config.callEnabled && config.multipleChannels
+        promptSendEnabled = config.chatEnabled
+        attachments = config.chatEnabled ? config.attachments : .init()
+    }
+}
+
+struct ExampleConfigReplacement {
+    private(set) var epoch: UInt64 = 0
+    private(set) var value: ExampleServerConfig?
+
+    mutating func begin() -> UInt64 {
+        epoch &+= 1
+        value = nil
+        return epoch
+    }
+
+    mutating func install(_ config: ExampleServerConfig, for expectedEpoch: UInt64) -> Bool {
+        guard epoch == expectedEpoch else { return false }
+        value = config
+        return true
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
 /// Owns the `OrigonClient` for the lifetime of an authenticated session and
 /// serves as the single entry point the UI uses for both call and chat
 /// functionality.
@@ -25,8 +140,18 @@ final class SDKManager: ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoadingSessions = false
+    @Published private(set) var serverConfig: ExampleServerConfig?
+    private var configReplacement = ExampleConfigReplacement()
+    private let checkpointStore = try? ExampleChatCheckpointStore.live()
+    private(set) var checkpointEndpoint: String?
+
+    var endpointPolicy: ExampleEndpointPolicy { ExampleEndpointPolicy(config: serverConfig) }
 
     private(set) var client: OrigonClient?
+
+    /// Narrow, fakeable surface for chat-selection policy. Call and media
+    /// behavior continues to use the concrete client.
+    var chatClient: (any ChatSessionClient)? { client }
 
     let call: CallService
     let chat: ChatService
@@ -68,6 +193,9 @@ final class SDKManager: ObservableObject {
         userId: String? = nil,
         token: String? = nil
     ) async throws {
+        chat.clientWillChange()
+        let configEpoch = configReplacement.begin()
+        serverConfig = nil
         // `userId` is optional; when nil the SDK resolves a device
         // identifier internally to use as the fallback.
         let config = ClientConfig(
@@ -83,7 +211,15 @@ final class SDKManager: ObservableObject {
             try OrigonClient(config: config)
         }.value
 
+        let nextConfig = ExampleServerConfig(newClient.serverConfig)
+        guard configReplacement.install(nextConfig, for: configEpoch) else {
+            newClient.close()
+            throw CancellationError()
+        }
         self.client = newClient
+        self.checkpointEndpoint = endpoint
+        self.serverConfig = configReplacement.value
+        chat.clientDidChange()
         self.isReady = true
         startPolling()
     }
@@ -97,7 +233,32 @@ final class SDKManager: ObservableObject {
         sessions = []
         client?.close()
         client = nil
+        checkpointEndpoint = nil
+        _ = configReplacement.begin()
+        serverConfig = nil
         isReady = false
+    }
+
+    func checkpoint(sessionId: String) async -> ExampleChatCheckpoint? {
+        guard let checkpointStore, let endpoint = checkpointEndpoint else { return nil }
+        return try? await checkpointStore.read(endpoint: endpoint, sessionId: sessionId)
+    }
+
+    func markCheckpointSeen(
+        sessionId: String,
+        latestRowVisible: Bool,
+        sceneForeground: Bool
+    ) async {
+        guard let checkpointStore, let endpoint = checkpointEndpoint else { return }
+        try? await checkpointStore.markSeen(
+            endpoint: endpoint,
+            sessionId: sessionId,
+            messageId: exampleNewestEligibleMessageId(chat.messages),
+            authoritative: chat.focusedHistoryIsAuthoritative,
+            sceneForeground: sceneForeground,
+            detailVisible: chat.currentSessionId == sessionId,
+            latestRowVisible: latestRowVisible
+        )
     }
 
     // MARK: - Sessions (shared between call and chat)
