@@ -144,6 +144,8 @@ registers the cross-repository contracts that must change and validate together.
   inbound entries; endpoint ids are ephemeral media identities and are never
   persisted, logged, or interpreted as participants.
 - One detached blocking-next pump owns and frees each native subscription.
+  Multiple observations of the same session are independent; cancelling or
+  retiring one token never replaces or terminates another token's pump.
   Delivery runs on `MainActor` and acknowledges acceptance before invoking user
   code, so ordinary and terminal-zero callbacks may cancel the token or close the
   client reentrantly. `AudioLevelObservation.cancel()` and deinit are idempotent:

@@ -168,12 +168,12 @@ final class AudioLevelObservationState: @unchecked Sendable {
 
 final class AudioLevelObservationRegistry: @unchecked Sendable {
     private struct Entry {
-        let generation: UInt64
+        let sessionId: String
         let state: AudioLevelObservationState
     }
 
     private let lock = NSLock()
-    private var entries: [String: Entry] = [:]
+    private var entries: [UInt64: Entry] = [:]
     private var nextGeneration: UInt64 = 0
     private var closed = false
 
@@ -182,19 +182,15 @@ final class AudioLevelObservationRegistry: @unchecked Sendable {
         source: any AudioLevelNativeSource
     ) -> (AudioLevelObservationState, UInt64)? {
         lock.lock()
-        guard !closed else {
+        guard !closed, nextGeneration < UInt64.max else {
             lock.unlock()
             return nil
         }
-        nextGeneration &+= 1
+        nextGeneration += 1
         let generation = nextGeneration
         let state = AudioLevelObservationState(source: source)
-        let replaced = entries.updateValue(
-            Entry(generation: generation, state: state),
-            forKey: sessionId
-        )
+        entries[generation] = Entry(sessionId: sessionId, state: state)
         lock.unlock()
-        replaced?.state.cancel()
         return (state, generation)
     }
 
@@ -205,8 +201,8 @@ final class AudioLevelObservationRegistry: @unchecked Sendable {
     ) -> Bool {
         lock.lock()
         let matches = !closed
-            && entries[sessionId]?.generation == generation
-            && entries[sessionId]?.state === state
+            && entries[generation]?.sessionId == sessionId
+            && entries[generation]?.state === state
         lock.unlock()
         return matches && state.isActive()
     }
@@ -217,9 +213,9 @@ final class AudioLevelObservationRegistry: @unchecked Sendable {
         state: AudioLevelObservationState
     ) {
         lock.lock()
-        if entries[sessionId]?.generation == generation,
-           entries[sessionId]?.state === state {
-            entries.removeValue(forKey: sessionId)
+        if entries[generation]?.sessionId == sessionId,
+           entries[generation]?.state === state {
+            entries.removeValue(forKey: generation)
         }
         lock.unlock()
         state.finish()

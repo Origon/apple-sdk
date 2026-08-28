@@ -80,6 +80,24 @@ private final class CallbackCount: @unchecked Sendable {
     }
 }
 
+private final class FakeAudioLevelSourceQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sources: [FakeAudioLevelSource]
+
+    init(_ sources: [FakeAudioLevelSource]) {
+        self.sources = sources
+    }
+
+    func take() throws -> FakeAudioLevelSource {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !sources.isEmpty else {
+            throw OrigonError.notInitialized
+        }
+        return sources.removeFirst()
+    }
+}
+
 final class AudioLevelObservationTests: XCTestCase {
     private let ordinary = SessionAudioLevels(
         sessionId: "voice-1",
@@ -103,6 +121,16 @@ final class AudioLevelObservationTests: XCTestCase {
             testingHandle: handle,
             subscribeAudioLevels: { _, _ in source },
             destroy: { _ in onDestroy() }
+        )
+    }
+
+    private func client(sources: [FakeAudioLevelSource]) throws -> OrigonClient {
+        let handle = try XCTUnwrap(OpaquePointer(bitPattern: 1))
+        let queue = FakeAudioLevelSourceQueue(sources)
+        return OrigonClient(
+            testingHandle: handle,
+            subscribeAudioLevels: { _, _ in try queue.take() },
+            destroy: { _ in }
         )
     }
 
@@ -189,5 +217,38 @@ final class AudioLevelObservationTests: XCTestCase {
             source.push(.end)
             wait(for: [delivered, destroyed, freed], timeout: 2)
         }
+    }
+
+    func testSameSessionObservationsRemainIndependent() throws {
+        let firstSource = FakeAudioLevelSource()
+        let secondSource = FakeAudioLevelSource()
+        let firstFreed = expectation(description: "first native observation freed")
+        firstSource.onFree = { firstFreed.fulfill() }
+        let client = try client(sources: [firstSource, secondSource])
+        let firstCount = CallbackCount()
+        let secondCount = CallbackCount()
+        let firstDelivered = expectation(description: "first observer update")
+        let secondDelivered = expectation(description: "second observer updates")
+        secondDelivered.expectedFulfillmentCount = 2
+
+        let first = try client.observeAudioLevels(sessionId: "voice-1") { _ in
+            XCTAssertEqual(firstCount.increment(), 1)
+            firstDelivered.fulfill()
+        }
+        let second = try client.observeAudioLevels(sessionId: "voice-1") { _ in
+            _ = secondCount.increment()
+            secondDelivered.fulfill()
+        }
+        firstSource.push(.update(ordinary))
+        secondSource.push(.update(ordinary))
+        wait(for: [firstDelivered], timeout: 2)
+
+        first.cancel()
+        wait(for: [firstFreed], timeout: 2)
+        secondSource.push(.update(ordinary))
+        wait(for: [secondDelivered], timeout: 2)
+        XCTAssertEqual(firstCount.load(), 1)
+        XCTAssertEqual(secondCount.load(), 2)
+        withExtendedLifetime(second) {}
     }
 }
