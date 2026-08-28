@@ -135,6 +135,26 @@ registers the cross-repository contracts that must change and validate together.
   `0-9*#A-D` before calling the ABI. Neither local validation nor native errors
   echo the symbol, and a failed request is never retried by the wrapper.
 
+## Session audio levels
+
+- The wrapper consumes the additive C audio-level subscription ABI registered in
+  `/home/yl/workspace/apps/sdk/session/docs/contract.md` and exposes one combined
+  `observeAudioLevels(sessionId:_:)` callback. `SessionAudioLevels` carries finite
+  linear PCM RMS aggregate `outbound`/`inbound` values plus endpoint-attributed
+  inbound entries; endpoint ids are ephemeral media identities and are never
+  persisted, logged, or interpreted as participants.
+- One detached blocking-next pump owns and frees each native subscription.
+  Delivery runs on `MainActor` and acknowledges acceptance before invoking user
+  code, so ordinary and terminal-zero callbacks may cancel the token or close the
+  client reentrantly. `AudioLevelObservation.cancel()` and deinit are idempotent:
+  they invalidate queued delivery and signal native cancellation without joining
+  on the main actor; the pump performs final free off-main. Creation errors throw
+  synchronously, while post-start advisory failure remains one topology-complete
+  zero followed by end and never affects audio/session state.
+- The public v1 surface is endpoint-only and fixed-cadence. It adds no participant
+  id, VAD/`isSpeaking`, adaptive normalization, OS-volume correction,
+  `AsyncStream`, or mobile UI.
+
 ## Release gate
 
 The XCFramework is a local artifact until an owner publishes it. Before any

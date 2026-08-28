@@ -158,6 +158,37 @@ public enum ChatAccessIntent: Int32, Sendable, Equatable {
     case notification = 2
 }
 
+/// One endpoint-attributed inbound level in a logical voice session.
+public struct EndpointAudioLevel: Sendable {
+    public let endpointId: String
+    public let inbound: Float
+
+    public init(endpointId: String, inbound: Float) {
+        self.endpointId = endpointId
+        self.inbound = inbound
+    }
+}
+
+/// Latest complete numeric audio-level snapshot for one logical voice session.
+public struct SessionAudioLevels: Sendable {
+    public let sessionId: String
+    public let outbound: Float
+    public let inbound: Float
+    public let endpoints: [EndpointAudioLevel]
+
+    public init(
+        sessionId: String,
+        outbound: Float,
+        inbound: Float,
+        endpoints: [EndpointAudioLevel]
+    ) {
+        self.sessionId = sessionId
+        self.outbound = outbound
+        self.inbound = inbound
+        self.endpoints = endpoints
+    }
+}
+
 // MARK: - Configuration / requests
 
 /// Configuration for creating an `OrigonClient`.
