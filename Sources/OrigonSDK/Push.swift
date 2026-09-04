@@ -123,7 +123,7 @@ final class PushRegistrar: @unchecked Sendable {
     /// Fence a closing client from buffered or already-queued registration.
     /// The token remains buffered for the next authoritative client.
     func detach(_ client: OrigonClient) {
-        queue.async {
+        queue.async { [weak client] in
             if self.client === client {
                 self.client = nil
             }

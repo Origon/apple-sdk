@@ -394,8 +394,8 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     deinit {
-        // No explicit push detach needed: PushRegistrar holds the client
-        // weakly, so its reference auto-nils when we deallocate.
+        // Defensive repeat after an explicit close. Registrar detach keeps
+        // only a weak capture so this cannot resurrect a deinitializing client.
         close()
     }
 
