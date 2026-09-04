@@ -61,7 +61,7 @@ Add the package to your `Package.swift` or through Xcode's package manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Origon/apple-sdk", from: "0.3.2"),
+    .package(url: "https://github.com/Origon/apple-sdk", from: "0.3.3"),
 ]
 ```
 
@@ -176,6 +176,16 @@ let client = try OrigonClient(config: ClientConfig(
     userId: "user-123"
 ))
 
+// Render a cached generation immediately when available, but enable actions
+// only after an authoritative network generation arrives.
+for try await update in try client.serverConfigUpdates() {
+    if case .snapshot(let snapshot) = update {
+        render(snapshot.config)
+        actionsEnabled = snapshot.authoritative
+        if snapshot.authoritative { break }
+    }
+}
+
 // 2. Start a voice session.
 let response = try client.startCall(StartCallOptions())
 print("session \(response.sessionId) dialing \(response.url)")
@@ -204,6 +214,14 @@ try client.setMute(id: response.sessionId, muted: true)
 
 // Send one DTMF digit to the active CX flow. Valid symbols are 0-9, *, #, A-D.
 try client.sendDtmf(id: response.sessionId, digit: "5")
+
+// Observe combined local/remote RMS plus endpoint-attributed inbound levels.
+// Retain the token for as long as the UI needs updates; callbacks run on MainActor.
+let levelObservation = try client.observeAudioLevels(sessionId: response.sessionId) { levels in
+    let displayLevel = min(max(max(levels.outbound, levels.inbound) * 4, 0), 1)
+    updateSpeakingWave(displayLevel)
+}
+// Later: levelObservation.cancel()
 
 // Audio output route — process-global, so no session id. Maps onto
 // `AVAudioSession.overrideOutputAudioPort`; the SDK re-asserts the choice
@@ -468,6 +486,7 @@ OrigonClient.registerForPushNotifications(deviceToken: deviceToken, environment:
 | `joinCall(_:)` / `joinChat(_:)` | Attach to a previously-obtained `StartSessionResponse`. |
 | `endSession(_:)` / `endAllSessions()` | Close a single / every session. |
 | `sendDtmf(id:digit:)` | Voice — send one uppercase ASCII `0-9`, `*`, `#`, or `A-D` control symbol to the CX flow. Produces no local tone or haptic. |
+| `observeAudioLevels(sessionId:_:)` | Voice — cancellable MainActor callback carrying aggregate outbound/inbound RMS and endpoint-attributed inbound levels. Retain the returned `AudioLevelObservation`. |
 | `setMute(id:muted:)` / `setMuteAll(muted:)` | Voice — absolute mute. |
 | `setAudioOutput(_:)` | Voice — override the audio output route (`.speaker` / `.automatic` / `.bluetooth`). Process-global; survives reconnects. |
 | `sendMessage(id:payload:)` | Chat — POST `<sessionUrl>/message`. Returns the server-issued `Message`. Fires `.messageAdded` then `.messageUpdated`. |

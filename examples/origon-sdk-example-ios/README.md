@@ -62,6 +62,26 @@ required SDK integration. Apps that want passive retained-chat restore can use
 the API described in the repository's main README while keeping explicit row
 and notification navigation on their named intents.
 
+## Audio-level callback probe
+
+The example UI intentionally remains unchanged, but a call surface can attach the
+new native meter without opening another microphone path:
+
+```swift
+let observation = try client.observeAudioLevels(sessionId: sessionId) { levels in
+    // MainActor. Use aggregate levels for a wave and endpoint entries for tiles.
+    let wave = min(max(max(levels.outbound, levels.inbound) * 4, 0), 1)
+    renderWave(wave)
+}
+
+// Retain while the call view is active, then cancel (also idempotent on deinit).
+observation.cancel()
+```
+
+The callback is advisory UI data. Cancellation or metering failure never changes
+the underlying audio call, and endpoint ids must not be persisted or treated as
+canonical participant identities.
+
 ## Where to look in the code
 
 If you want to wire OrigonSDK into your own app, start with these files:
@@ -117,7 +137,7 @@ safe-logging integration guide.
 
 The `OrigonSDK` Swift package is consumed via SPM from
 [github.com/Origon/apple-sdk](https://github.com/Origon/apple-sdk). The version
-rule is **Up to Next Major Version** from `0.3.2`. To change it, select the project in Xcode →
+rule is **Up to Next Major Version** from `0.3.3`. To change it, select the project in Xcode →
 **Package Dependencies** → double-click the `apple-sdk` row and edit the rule.
 
 ## Scope notes

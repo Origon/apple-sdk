@@ -53,6 +53,229 @@ final class NativeHandleGate: @unchecked Sendable {
     }
 }
 
+private final class ConfigAuthorityObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func install(_ task: Task<Void, Never>) {
+        lock.lock()
+        self.task?.cancel()
+        self.task = task
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        let task = self.task
+        self.task = nil
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
+enum AudioLevelNativeStep: Sendable {
+    case update(SessionAudioLevels)
+    case end
+    case cancelled
+}
+
+protocol AudioLevelNativeSource: AnyObject, Sendable {
+    func next() -> AudioLevelNativeStep
+    func cancel()
+    func free()
+}
+
+private final class CNativeAudioLevelSource: AudioLevelNativeSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pointer: OpaquePointer?
+
+    init(_ pointer: OpaquePointer) {
+        self.pointer = pointer
+    }
+
+    func next() -> AudioLevelNativeStep {
+        lock.lock()
+        let current = pointer
+        lock.unlock()
+        guard let current else { return .cancelled }
+
+        var raw = COrigonSDK.SessionAudioLevels()
+        let status = session_audio_level_subscription_next(current, &raw)
+        defer { session_audio_levels_clear(&raw) }
+        switch status {
+        case SESSION_AUDIO_LEVELS_UPDATE:
+            guard let sessionId = raw.session_id else { return .end }
+            let endpoints: [EndpointAudioLevel]
+            if let items = raw.endpoints {
+                endpoints = (0..<Int(raw.endpoint_count)).compactMap { index in
+                    guard let endpointId = items[index].endpoint_id else { return nil }
+                    return EndpointAudioLevel(
+                        endpointId: String(cString: endpointId),
+                        inbound: items[index].inbound
+                    )
+                }
+            } else {
+                endpoints = []
+            }
+            return .update(SessionAudioLevels(
+                sessionId: String(cString: sessionId),
+                outbound: raw.outbound,
+                inbound: raw.inbound,
+                endpoints: endpoints
+            ))
+        case SESSION_AUDIO_LEVELS_CANCELLED:
+            return .cancelled
+        case SESSION_AUDIO_LEVELS_END:
+            return .end
+        default:
+            // Invalid bridge arguments are wrapper bugs, not a post-start
+            // observer error surface. Fail closed as a terminal end.
+            return .end
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        if let current = pointer {
+            session_audio_level_subscription_cancel(current)
+        }
+        lock.unlock()
+    }
+
+    func free() {
+        lock.lock()
+        let current = pointer
+        pointer = nil
+        lock.unlock()
+        if let current {
+            session_audio_level_subscription_free(current)
+        }
+    }
+}
+
+final class AudioLevelObservationState: @unchecked Sendable {
+    let source: any AudioLevelNativeSource
+    private let lock = NSLock()
+    private var active = true
+
+    init(source: any AudioLevelNativeSource) {
+        self.source = source
+    }
+
+    func isActive() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active
+    }
+
+    func cancel() {
+        lock.lock()
+        guard active else {
+            lock.unlock()
+            return
+        }
+        active = false
+        source.cancel()
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        active = false
+        lock.unlock()
+    }
+}
+
+final class AudioLevelObservationRegistry: @unchecked Sendable {
+    private struct Entry {
+        let sessionId: String
+        let state: AudioLevelObservationState
+    }
+
+    private let lock = NSLock()
+    private var entries: [UInt64: Entry] = [:]
+    private var nextGeneration: UInt64 = 0
+    private var closed = false
+
+    func install(
+        sessionId: String,
+        source: any AudioLevelNativeSource
+    ) -> (AudioLevelObservationState, UInt64)? {
+        lock.lock()
+        guard !closed, nextGeneration < UInt64.max else {
+            lock.unlock()
+            return nil
+        }
+        nextGeneration += 1
+        let generation = nextGeneration
+        let state = AudioLevelObservationState(source: source)
+        entries[generation] = Entry(sessionId: sessionId, state: state)
+        lock.unlock()
+        return (state, generation)
+    }
+
+    func accepts(
+        sessionId: String,
+        generation: UInt64,
+        state: AudioLevelObservationState
+    ) -> Bool {
+        lock.lock()
+        let matches = !closed
+            && entries[generation]?.sessionId == sessionId
+            && entries[generation]?.state === state
+        lock.unlock()
+        return matches && state.isActive()
+    }
+
+    func retire(
+        sessionId: String,
+        generation: UInt64,
+        state: AudioLevelObservationState
+    ) {
+        lock.lock()
+        if entries[generation]?.sessionId == sessionId,
+           entries[generation]?.state === state {
+            entries.removeValue(forKey: generation)
+        }
+        lock.unlock()
+        state.finish()
+    }
+
+    func close() {
+        lock.lock()
+        guard !closed else {
+            lock.unlock()
+            return
+        }
+        closed = true
+        let states = entries.values.map(\.state)
+        entries.removeAll()
+        lock.unlock()
+        for state in states {
+            state.cancel()
+        }
+    }
+}
+
+/// Idempotent ownership token for one combined audio-level callback.
+/// Cancellation is signalled immediately; the off-main pump owns the native
+/// handle and frees it after its blocking `next` exits.
+public final class AudioLevelObservation: @unchecked Sendable {
+    private let state: AudioLevelObservationState
+
+    fileprivate init(state: AudioLevelObservationState) {
+        self.state = state
+    }
+
+    public func cancel() {
+        state.cancel()
+    }
+
+    deinit {
+        cancel()
+    }
+}
+
 /// The primary interface to the Origon platform on Apple platforms.
 ///
 /// Backed by the `COrigonSDK` XCFramework (statically linked
@@ -63,6 +286,11 @@ final class NativeHandleGate: @unchecked Sendable {
 /// `kind` / `statusCode` / `code` / `message`.
 public final class OrigonClient: @unchecked Sendable {
     private let nativeGate: NativeHandleGate
+    private let audioLevelObservations = AudioLevelObservationRegistry()
+    private let configAuthorityObservation = ConfigAuthorityObservation()
+    private let subscribeAudioLevelsNative:
+        @Sendable (OpaquePointer, String) throws -> any AudioLevelNativeSource
+    private let destroyNative: @Sendable (OpaquePointer) -> Void
 
     /// Install the global tracing subscriber. Idempotent — only the
     /// first call installs; subsequent calls are no-ops.
@@ -118,9 +346,30 @@ public final class OrigonClient: @unchecked Sendable {
             throw OrigonError.consume(&err)
         }
         self.nativeGate = NativeHandleGate(newHandle)
-        // Become the active client for push registration and flush any
-        // token buffered before initialization. See `Push.swift`.
-        PushRegistrar.shared.attach(self)
+        self.subscribeAudioLevelsNative = { handle, sessionId in
+            var error = SessionError()
+            var subscription: OpaquePointer?
+            let result = sessionId.withCString {
+                session_client_subscribe_audio_levels(handle, $0, &subscription, &error)
+            }
+            guard result == 0, let subscription else {
+                throw OrigonError.consume(&error)
+            }
+            return CNativeAudioLevelSource(subscription)
+        }
+        self.destroyNative = { session_client_destroy($0) }
+        observeConfigAuthorityForPush()
+    }
+
+    init(
+        testingHandle: OpaquePointer,
+        subscribeAudioLevels: @escaping @Sendable
+            (OpaquePointer, String) throws -> any AudioLevelNativeSource,
+        destroy: @escaping @Sendable (OpaquePointer) -> Void
+    ) {
+        self.nativeGate = NativeHandleGate(testingHandle)
+        self.subscribeAudioLevelsNative = subscribeAudioLevels
+        self.destroyNative = destroy
     }
 
     /// Serialize a `[String: Any]?` to a JSON string. Returns `nil` when
@@ -145,15 +394,20 @@ public final class OrigonClient: @unchecked Sendable {
     }
 
     deinit {
-        // No explicit push detach needed: PushRegistrar holds the client
-        // weakly, so its reference auto-nils when we deallocate.
+        // Defensive repeat after an explicit close. Registrar detach keeps
+        // only a weak capture so this cannot resurrect a deinitializing client.
         close()
     }
 
-    /// Cancel and join every native finite loader, then destroy the client.
+    /// Invalidate and signal every audio observation, cancel and join every
+    /// native finite loader, then destroy the client. Audio pumps join and
+    /// free their caller-owned observation handles off-main.
     /// Call before `clearAllChatCaches()` during logout.
     public func close() {
-        nativeGate.close { session_client_destroy($0) }
+        configAuthorityObservation.cancel()
+        PushRegistrar.shared.detach(self)
+        audioLevelObservations.close()
+        nativeGate.close(destroyNative)
     }
 
     private func withHandle<R>(_ body: (OpaquePointer) throws -> R) throws -> R {
@@ -212,51 +466,140 @@ public final class OrigonClient: @unchecked Sendable {
 
     // MARK: - Cached /config getters
 
-    /// Pre-populated first assistant message configured for the tenant.
-    public var startMessage: String {
-        withHandleOr("") { handle in
-            guard let cstr = session_client_get_start_message(handle) else { return "" }
-            defer { session_string_free(cstr) }
-            return String(cString: cstr)
+    private func readServerConfig() throws -> ServerConfig {
+        var error = SessionError()
+        var jsonPointer: UnsafeMutablePointer<CChar>?
+        let result = try withHandle {
+            session_client_server_config($0, &jsonPointer, &error)
         }
-    }
-
-    public var isChatEnabled: Bool {
-        withHandleOr(false) { session_client_is_chat_enabled($0) == 1 }
-    }
-
-    public var isCallEnabled: Bool {
-        withHandleOr(false) { session_client_is_call_enabled($0) == 1 }
-    }
-
-    /// True when chat and voice may share one session.
-    public var multipleChannels: Bool {
-        withHandleOr(false) { session_client_is_multiple_channels_allowed($0) == 1 }
-    }
-
-    public var attachmentPolicy: AttachmentPolicy {
-        withHandleOr(.disabled) { handle in
-            var raw = SessionAttachmentPolicy()
-            guard session_client_get_attachment_policy(handle, &raw) == 0 else {
-                return .disabled
-            }
-            return AttachmentPolicy(
-                images: AttachmentRule(enabled: raw.images.enabled == 1, maxSize: raw.images.max_size),
-                documents: AttachmentRule(enabled: raw.documents.enabled == 1, maxSize: raw.documents.max_size),
-                videos: AttachmentRule(enabled: raw.videos.enabled == 1, maxSize: raw.videos.max_size),
-                audio: AttachmentRule(enabled: raw.audio.enabled == 1, maxSize: raw.audio.max_size)
+        guard result == 0, let jsonPointer else {
+            throw OrigonError.consume(&error)
+        }
+        defer { session_string_free(jsonPointer) }
+        do {
+            return try JSONDecoder().decode(
+                ServerConfig.self,
+                from: Data(String(cString: jsonPointer).utf8)
+            )
+        } catch {
+            throw OrigonError(
+                kind: .other,
+                message: "server config decode: \(error.localizedDescription)"
             )
         }
     }
 
+    /// Pre-populated first assistant message configured for the tenant.
+    public var startMessage: String {
+        serverConfig.startMessage
+    }
+
+    public var isChatEnabled: Bool {
+        serverConfig.isChatEnabled
+    }
+
+    public var isCallEnabled: Bool {
+        serverConfig.isCallEnabled
+    }
+
+    /// True when chat and voice may share one session.
+    public var multipleChannels: Bool {
+        serverConfig.multipleChannels
+    }
+
+    public var attachmentPolicy: AttachmentPolicy {
+        serverConfig.attachmentPolicy
+    }
+
     public var serverConfig: ServerConfig {
-        ServerConfig(
-            startMessage: startMessage,
-            multipleChannels: multipleChannels,
-            isChatEnabled: isChatEnabled,
-            isCallEnabled: isCallEnabled,
-            attachmentPolicy: attachmentPolicy
-        )
+        (try? readServerConfig()) ?? .disabled
+    }
+
+    /// Observe the retained cache snapshot and the manager-owned network
+    /// refresh. Cancelling this stream detaches only this observer.
+    public func serverConfigUpdates()
+        throws -> AsyncThrowingStream<ServerConfigLoadUpdate, Error>
+    {
+        try makeServerConfigUpdates(retry: false)
+    }
+
+    /// Coalesce or start a retry after a transient `/config` failure.
+    public func retryServerConfig()
+        throws -> AsyncThrowingStream<ServerConfigLoadUpdate, Error>
+    {
+        try makeServerConfigUpdates(retry: true)
+    }
+
+    private func makeServerConfigUpdates(
+        retry: Bool
+    ) throws -> AsyncThrowingStream<ServerConfigLoadUpdate, Error> {
+        var error = SessionError()
+        var rawLoader: OpaquePointer?
+        let result = try withHandle { handle in
+            if retry {
+                session_client_config_retry(handle, &rawLoader, &error)
+            } else {
+                session_client_config_loader_start(handle, &rawLoader, &error)
+            }
+        }
+        guard result == 0, let rawLoader else { throw OrigonError.consume(&error) }
+        let loader = NativeLoader(rawLoader)
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(2)) { continuation in
+            let task = Task.detached { [weak self] in
+                defer { loader.free() }
+                do {
+                    while !Task.isCancelled {
+                        switch try loader.next() {
+                        case .update(let json):
+                            let snapshot = try JSONDecoder().decode(
+                                ServerConfigLoadSnapshot.self,
+                                from: Data(json.utf8)
+                            )
+                            if snapshot.authoritative, let self {
+                                PushRegistrar.shared.attach(self)
+                            }
+                            continuation.yield(.snapshot(snapshot))
+                        case .refreshFailed(let error, let cached):
+                            continuation.yield(.refreshFailed(
+                                error: error,
+                                cachedSnapshotEmitted: cached
+                            ))
+                        case .end, .cancelled:
+                            continuation.finish()
+                            return
+                        }
+                    }
+                    loader.cancel()
+                    continuation.finish()
+                } catch {
+                    loader.cancel()
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                loader.cancel()
+                task.cancel()
+            }
+        }
+    }
+
+    private func observeConfigAuthorityForPush() {
+        let task = Task.detached { [weak self] in
+            guard let self else { return }
+            do {
+                for try await update in try self.serverConfigUpdates() {
+                    if case .snapshot(let snapshot) = update, snapshot.authoritative {
+                        guard !Task.isCancelled else { return }
+                        PushRegistrar.shared.attach(self)
+                        return
+                    }
+                }
+            } catch {
+                // The public stream carries the typed failure. Push remains
+                // buffered until a later authoritative generation.
+            }
+        }
+        configAuthorityObservation.install(task)
     }
 
     /// Replace session-level attributes injected as `data.attributes`
@@ -714,6 +1057,84 @@ public final class OrigonClient: @unchecked Sendable {
         var err = SessionError()
         let rc = try withHandle { session_client_set_mute_all($0, muted ? 1 : 0, &err) }
         if rc != 0 { throw OrigonError.consume(&err) }
+    }
+
+    /// Observe the latest combined outbound, aggregate inbound, and
+    /// endpoint-attributed inbound levels for one logical voice session.
+    ///
+    /// Creation errors throw synchronously. Updates are delivered on
+    /// `MainActor`; post-start native failures terminate after the native
+    /// terminal-zero update and do not create a callback error channel.
+    @discardableResult
+    public func observeAudioLevels(
+        sessionId: String,
+        _ observer: @escaping @MainActor @Sendable (SessionAudioLevels) -> Void
+    ) throws -> AudioLevelObservation {
+        let source = try withHandle {
+            try subscribeAudioLevelsNative($0, sessionId)
+        }
+        guard let (state, generation) = audioLevelObservations.install(
+            sessionId: sessionId,
+            source: source
+        ) else {
+            source.cancel()
+            DispatchQueue.global(qos: .userInitiated).async {
+                source.free()
+            }
+            throw OrigonError.notInitialized
+        }
+
+        let token = AudioLevelObservation(state: state)
+        Self.startAudioLevelPump(
+            sessionId: sessionId,
+            generation: generation,
+            state: state,
+            registry: audioLevelObservations,
+            observer: observer
+        )
+        return token
+    }
+
+    static func startAudioLevelPump(
+        sessionId: String,
+        generation: UInt64,
+        state: AudioLevelObservationState,
+        registry: AudioLevelObservationRegistry,
+        observer: @escaping @MainActor @Sendable (SessionAudioLevels) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                registry.retire(
+                    sessionId: sessionId,
+                    generation: generation,
+                    state: state
+                )
+                state.source.free()
+            }
+            while state.isActive() {
+                switch state.source.next() {
+                case .update(let levels):
+                    let accepted = DispatchSemaphore(value: 0)
+                    Task { @MainActor in
+                        let deliver = registry.accepts(
+                            sessionId: sessionId,
+                            generation: generation,
+                            state: state
+                        )
+                        // The pump may continue or retire before user code.
+                        // Reentrant cancel/close therefore cannot form a
+                        // pump↔MainActor wait cycle.
+                        accepted.signal()
+                        if deliver {
+                            observer(levels)
+                        }
+                    }
+                    accepted.wait()
+                case .end, .cancelled:
+                    return
+                }
+            }
+        }
     }
 
     /// Override the audio output route (speaker / receiver / Bluetooth).
