@@ -545,7 +545,7 @@ public final class OrigonClient: @unchecked Sendable {
         guard result == 0, let rawLoader else { throw OrigonError.consume(&error) }
         let loader = NativeLoader(rawLoader)
         return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(2)) { continuation in
-            let task = Task.detached {
+            let task = Task.detached { [weak self] in
                 defer { loader.free() }
                 do {
                     while !Task.isCancelled {
@@ -555,6 +555,9 @@ public final class OrigonClient: @unchecked Sendable {
                                 ServerConfigLoadSnapshot.self,
                                 from: Data(json.utf8)
                             )
+                            if snapshot.authoritative, let self {
+                                PushRegistrar.shared.attach(self)
+                            }
                             continuation.yield(.snapshot(snapshot))
                         case .refreshFailed(let error, let cached):
                             continuation.yield(.refreshFailed(
