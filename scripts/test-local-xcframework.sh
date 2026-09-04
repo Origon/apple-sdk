@@ -33,6 +33,14 @@ while IFS= read -r header; do
     echo "$header is missing session_client_send_dtmf" >&2
     exit 1
   }
+  grep -q 'session_client_directory_page_loader_start' "$header" || {
+    echo "$header is missing session_client_directory_page_loader_start" >&2
+    exit 1
+  }
+  grep -q 'session_client_session_history_page_loader_start' "$header" || {
+    echo "$header is missing session_client_session_history_page_loader_start" >&2
+    exit 1
+  }
 done < <(find "$artifact" -type f -name session_bridge.h -print)
 if (( header_count == 0 )); then
   echo "XCFramework has no session_bridge.h" >&2
@@ -49,6 +57,14 @@ while IFS= read -r library; do
   }
   grep -Eq '^_?session_client_send_dtmf$' <<<"$symbols" || {
     echo "$library is missing session_client_send_dtmf" >&2
+    exit 1
+  }
+  grep -Eq '^_?session_client_directory_page_loader_start$' <<<"$symbols" || {
+    echo "$library is missing session_client_directory_page_loader_start" >&2
+    exit 1
+  }
+  grep -Eq '^_?session_client_session_history_page_loader_start$' <<<"$symbols" || {
+    echo "$library is missing session_client_session_history_page_loader_start" >&2
     exit 1
   }
   for retired in session_client_get_sessions session_client_get_session \
@@ -73,6 +89,14 @@ if grep -Eq 'public (func|var) (receiveDtmf|onDtmf|dtmfReceived)' "$wrapper"; th
   echo "Swift wrapper exposes an unsupported DTMF receive API" >&2
   exit 1
 fi
+grep -q 'public func sessionDirectoryPageUpdates' "$wrapper" || {
+  echo "Swift wrapper is missing sessionDirectoryPageUpdates" >&2
+  exit 1
+}
+grep -q 'public func sessionHistoryPageUpdates' "$wrapper" || {
+  echo "Swift wrapper is missing sessionHistoryPageUpdates" >&2
+  exit 1
+}
 
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
