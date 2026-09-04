@@ -62,6 +62,9 @@ registers the cross-repository contracts that must change and validate together.
   only its native observation; `close()` cancels observations and native
   destroy joins the manager refresh. The wrapper retains its convenience
   properties, all backed by that same whole snapshot.
+- The five legacy scalar C config getters are removed. The wrapper convenience
+  properties remain source-compatible but derive exclusively from the atomic
+  `serverConfig` snapshot, so one composite read cannot span generations.
 - A cached update is presentation-only. The example may paint exact-scope
   directory/transcript/config data, but gates start/open/restore/send/typing,
   upload/server-delete, and push registration until `authoritative == true`.
